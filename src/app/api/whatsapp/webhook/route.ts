@@ -46,6 +46,7 @@ interface WhatsAppMessage {
   sticker?: { id: string; mime_type: string }
   location?: { latitude: number; longitude: number; name?: string; address?: string }
   reaction?: { message_id: string; emoji: string }
+  button?: { payload: string; text: string }
   /**
    * Set when the customer taps a button or list row on an interactive
    * message we sent. `button_reply.id` / `list_reply.id` is whatever id
@@ -881,6 +882,8 @@ async function parseMessageContent(
   switch (message.type) {
     case 'text':
       return { ...empty, contentText: message.text?.body || null }
+    case 'button':
+      return { ...empty, contentText: message.button?.text || message.button?.payload || 'Botón', interactiveReplyId: message.button?.payload || null, }
 
     case 'image':
       if (message.image?.id) {
