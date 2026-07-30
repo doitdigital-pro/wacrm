@@ -122,6 +122,7 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
 function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof useTranslations> }) {
   switch (message.content_type) {
     case "text":
+    case "button":
       return (
         <p className="whitespace-pre-wrap break-words text-sm">
           {message.content_text}
