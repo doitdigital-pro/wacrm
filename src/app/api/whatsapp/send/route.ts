@@ -193,7 +193,7 @@ export async function POST(request: Request) {
           whatsapp_message_id: result.whatsappMessageId,
         })
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (err instanceof SendMessageError || err instanceof SendInstagramMessageError) {
         return NextResponse.json(
           { error: err.message },

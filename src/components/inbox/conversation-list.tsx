@@ -9,7 +9,8 @@ import {
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X, Instagram, MessageCircle } from "lucide-react";
+import { Search, ChevronDown, X, MessageCircle } from "lucide-react";
+import { InstagramIcon } from "@/components/ui/instagram-icon";
 import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
 import { Input } from "@/components/ui/input";
@@ -476,7 +477,7 @@ function ConversationItem({
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 min-w-0">
             {conversation.channel === 'instagram' ? (
-              <Instagram className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <InstagramIcon className="size-4 shrink-0 text-pink-600" />
             ) : (
               <MessageCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
             )}

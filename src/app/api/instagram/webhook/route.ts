@@ -4,7 +4,19 @@ import { resolveConversationByInstagram } from '@/lib/instagram/resolve-conversa
 
 export const maxDuration = 60;
 
-let _adminClient: any = null;
+type WebhookBody = {
+  object?: string;
+  entry?: Array<{
+    messaging?: Array<{
+      message?: { text?: string; mid?: string };
+      sender?: { id: string };
+      recipient?: { id: string };
+      timestamp?: number;
+    }>;
+  }>;
+};
+
+let _adminClient: ReturnType<typeof createClient> | null = null;
 function supabaseAdmin() {
   if (!_adminClient) {
     _adminClient = createClient(
@@ -61,7 +73,7 @@ export async function GET(request: Request) {
 // POST - Receive messages
 export async function POST(request: Request) {
   const rawBody = await request.text();
-  let body: any;
+  let body: WebhookBody;
   try {
     body = JSON.parse(rawBody);
   } catch {
@@ -80,7 +92,7 @@ export async function POST(request: Request) {
   return NextResponse.json({ status: 'received' }, { status: 200 });
 }
 
-async function processWebhook(body: any) {
+async function processWebhook(body: WebhookBody) {
   if (body.object !== 'instagram' || !body.entry) return;
 
   for (const entry of body.entry) {
