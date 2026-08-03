@@ -27,6 +27,8 @@ import {
   RefreshCw,
   PanelRightOpen,
   PanelRightClose,
+  Instagram,
+  MessageCircle,
 } from "lucide-react";
 import { format, isToday, isYesterday, differenceInHours } from "date-fns";
 import { useTranslations } from "next-intl";
@@ -898,7 +900,14 @@ export function MessageThread({
             {displayName.charAt(0).toUpperCase()}
           </div>
           <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold text-foreground">{displayName}</h2>
+            <h2 className="flex items-center gap-1.5 truncate text-sm font-semibold text-foreground">
+              {conversation.channel === 'instagram' ? (
+                <Instagram className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              ) : (
+                <MessageCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              )}
+              {displayName}
+            </h2>
             <p className="truncate text-xs text-muted-foreground">{contact.phone}</p>
           </div>
           {/* Session timer badge — hidden on the narrowest phones so

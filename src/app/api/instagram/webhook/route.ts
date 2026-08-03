@@ -1,0 +1,148 @@
+import { NextResponse, after } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { resolveConversationByInstagram } from '@/lib/instagram/resolve-conversation';
+
+export const maxDuration = 60;
+
+let _adminClient: any = null;
+function supabaseAdmin() {
+  if (!_adminClient) {
+    _adminClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+  }
+  return _adminClient;
+}
+
+// GET - Webhook verification
+export async function GET(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const mode = searchParams.get('hub.mode');
+    const challenge = searchParams.get('hub.challenge');
+    const verifyToken = searchParams.get('hub.verify_token');
+
+    if (mode !== 'subscribe' || !challenge || !verifyToken) {
+      return NextResponse.json({ error: 'Missing verification parameters' }, { status: 400 });
+    }
+
+    const { data: configs, error: configError } = await supabaseAdmin()
+      .from('instagram_configs')
+      .select('id, verify_token');
+
+    if (configError || !configs) {
+      console.error('Error fetching IG configs for verification:', configError);
+      return NextResponse.json({ error: 'Verification failed' }, { status: 403 });
+    }
+
+    let matched = false;
+    for (const config of configs) {
+      if (config.verify_token === verifyToken) {
+        matched = true;
+        break;
+      }
+    }
+
+    if (matched || verifyToken === process.env.INSTAGRAM_VERIFY_TOKEN) {
+      return new Response(challenge, {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+      });
+    }
+
+    return NextResponse.json({ error: 'Verification token mismatch' }, { status: 403 });
+  } catch (error) {
+    console.error('Error in IG webhook GET verification:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+// POST - Receive messages
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  let body: any;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  // Acknowledge quickly and process in background
+  after(async () => {
+    try {
+      await processWebhook(body);
+    } catch (error) {
+      console.error('Error processing IG webhook:', error);
+    }
+  });
+
+  return NextResponse.json({ status: 'received' }, { status: 200 });
+}
+
+async function processWebhook(body: any) {
+  if (body.object !== 'instagram' || !body.entry) return;
+
+  for (const entry of body.entry) {
+    if (!entry.messaging) continue;
+
+    for (const event of entry.messaging) {
+      if (!event.message || !event.sender || !event.recipient) continue;
+
+      const senderId = event.sender.id;
+      const pageId = event.recipient.id;
+      const message = event.message;
+
+      if (!message.text) continue; // Only handling text for now
+
+      // Find the IG config by page_id
+      const { data: configRows, error: configError } = await supabaseAdmin()
+        .from('instagram_configs')
+        .select('*')
+        .eq('page_id', pageId);
+
+      if (configError || !configRows || configRows.length === 0) {
+        console.error('No IG config found for page_id:', pageId);
+        continue;
+      }
+
+      const config = configRows[0];
+
+      // Resolve contact and conversation
+      const { conversationId, contactId } = await resolveConversationByInstagram(
+        supabaseAdmin(),
+        config.account_id,
+        senderId,
+        `IG_${senderId}`
+      );
+
+      // Insert message
+      const { error: msgError } = await supabaseAdmin()
+        .from('messages')
+        .insert({
+          conversation_id: conversationId,
+          sender_type: 'customer',
+          content_type: 'text',
+          content_text: message.text,
+          message_id: message.mid,
+          status: 'delivered',
+          created_at: new Date(event.timestamp).toISOString(),
+        });
+
+      if (msgError) {
+        console.error('Error inserting IG message:', msgError);
+        continue;
+      }
+
+      // Update conversation
+      await supabaseAdmin()
+        .from('conversations')
+        .update({
+          last_message_text: message.text,
+          last_message_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', conversationId);
+    }
+  }
+}
