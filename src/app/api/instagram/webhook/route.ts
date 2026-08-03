@@ -39,14 +39,16 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Missing verification parameters' }, { status: 400 });
     }
 
-    const { data: configs, error: configError } = await supabaseAdmin()
+    const { data: configsData, error: configError } = await supabaseAdmin()
       .from('instagram_configs')
       .select('id, verify_token');
 
-    if (configError || !configs) {
+    if (configError || !configsData) {
       console.error('Error fetching IG configs for verification:', configError);
       return NextResponse.json({ error: 'Verification failed' }, { status: 403 });
     }
+
+    const configs = configsData as { id: string; verify_token: string | null }[];
 
     let matched = false;
     for (const config of configs) {
