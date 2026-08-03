@@ -9,7 +9,7 @@ import {
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X } from "lucide-react";
+import { Search, ChevronDown, X, Instagram, MessageCircle } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
 import { Input } from "@/components/ui/input";
@@ -474,9 +474,16 @@ function ConversationItem({
       {/* Content */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-sm font-medium text-foreground">
-            {displayName}
-          </span>
+          <div className="flex items-center gap-1.5 min-w-0">
+            {conversation.channel === 'instagram' ? (
+              <Instagram className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            ) : (
+              <MessageCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            )}
+            <span className="truncate text-sm font-medium text-foreground">
+              {displayName}
+            </span>
+          </div>
           <span className="shrink-0 text-[10px] text-muted-foreground">{timeAgo}</span>
         </div>
         <div className="mt-0.5 flex items-center justify-between gap-2">

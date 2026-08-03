@@ -161,6 +161,7 @@ export interface Conversation {
   id: string;
   user_id: string;
   contact_id: string;
+  channel?: string;
   status: ConversationStatus;
   assigned_agent_id?: string;
   last_message_text?: string;
@@ -214,7 +215,6 @@ export type ContentType =
   | 'video'
   | 'location'
   | 'template'
-  | 'button'
   /** Customer tapped a reply button or list row on a message we sent. */
   | 'interactive';
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
