@@ -120,7 +120,7 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
 }
 
 function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof useTranslations> }) {
-  switch (message.content_type) {
+  switch (message.content_type as string) {
     case "text":
     case "button":
       return (
