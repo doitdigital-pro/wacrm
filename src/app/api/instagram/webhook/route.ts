@@ -110,16 +110,17 @@ async function processWebhook(body: WebhookBody) {
       if (!message.text) continue; // Only handling text for now
 
       // Find the IG config by page_id
-      const { data: configRows, error: configError } = await supabaseAdmin()
+      const { data: configRowsData, error: configError } = await supabaseAdmin()
         .from('instagram_configs')
         .select('*')
         .eq('page_id', pageId);
 
-      if (configError || !configRows || configRows.length === 0) {
+      if (configError || !configRowsData || configRowsData.length === 0) {
         console.error('No IG config found for page_id:', pageId);
         continue;
       }
 
+      const configRows = configRowsData as { account_id: string }[];
       const config = configRows[0];
 
       // Resolve contact and conversation
@@ -131,7 +132,7 @@ async function processWebhook(body: WebhookBody) {
       );
 
       // Insert message
-      const { error: msgError } = await supabaseAdmin()
+      const { error: msgError } = await (supabaseAdmin() as any)
         .from('messages')
         .insert({
           conversation_id: conversationId,
@@ -140,7 +141,7 @@ async function processWebhook(body: WebhookBody) {
           content_text: message.text,
           message_id: message.mid,
           status: 'delivered',
-          created_at: new Date(event.timestamp).toISOString(),
+          created_at: new Date(event.timestamp || Date.now()).toISOString(),
         });
 
       if (msgError) {
@@ -149,7 +150,7 @@ async function processWebhook(body: WebhookBody) {
       }
 
       // Update conversation
-      await supabaseAdmin()
+      await (supabaseAdmin() as any)
         .from('conversations')
         .update({
           last_message_text: message.text,
