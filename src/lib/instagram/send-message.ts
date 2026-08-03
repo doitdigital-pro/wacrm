@@ -1,14 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { sendTextMessage, sendAction } from '@/lib/instagram/meta-api';
+import { sendTextMessage } from '@/lib/instagram/meta-api';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { SendInstagramMessageError } from '@/lib/instagram/resolve-conversation';
-import { InteractiveMessagePayload, interactivePayloadPreviewText } from '@/lib/whatsapp/interactive';
 
 export interface SendMessageParams {
   conversationId: string;
   messageType: string;
   contentText?: string | null;
-  interactivePayload?: InteractiveMessagePayload | null;
+  interactivePayload?: unknown;
   replyToMessageId?: string | null;
 }
 
@@ -22,7 +21,7 @@ export async function sendInstagramMessageToConversation(
   accountId: string,
   params: SendMessageParams
 ): Promise<SendMessageResult> {
-  const { conversationId, messageType, contentText, interactivePayload, replyToMessageId } = params;
+  const { conversationId, messageType, contentText, replyToMessageId } = params;
 
   if (!conversationId) {
     throw new SendInstagramMessageError('bad_request', 'conversation_id is required', 400);
@@ -122,7 +121,9 @@ export async function sendInstagramMessageToConversation(
       .eq('account_id', accountId)
       .eq('contact_id', contact.id)
       .eq('status', 'active');
-  } catch (err) {}
+  } catch (_err) {
+    // best-effort
+  }
 
   return { messageId: messageRecord.id, instagramMessageId: igMessageId };
 }
