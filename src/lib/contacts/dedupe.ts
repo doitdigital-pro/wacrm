@@ -21,9 +21,26 @@ export function normalizeKey(phone: string): string {
 /** Minimal shape we need back from a contacts lookup. */
 export interface ExistingContact {
   id: string;
-  phone: string;
+  phone?: string | null;
+  instagram_user_id?: string | null;
   name?: string | null;
   [key: string]: unknown;
+}
+
+export async function findExistingInstagramContact(
+  db: SupabaseClient,
+  accountId: string,
+  instagramUserId: string,
+): Promise<ExistingContact | null> {
+  const { data, error } = await db
+    .from("contacts")
+    .select("*")
+    .eq("account_id", accountId)
+    .eq("instagram_user_id", instagramUserId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data as ExistingContact;
 }
 
 /**
@@ -51,7 +68,7 @@ export async function findExistingContact(
   if (error || !data) return null;
 
   return (
-    (data as ExistingContact[]).find((c) => phonesMatch(c.phone, phone)) ?? null
+    (data as ExistingContact[]).find((c) => c.phone && phonesMatch(c.phone, phone)) ?? null
   );
 }
 
@@ -61,7 +78,7 @@ export async function findExistingContact(
  * exact matches but only warns on fuzzy ones.
  */
 export function isExactMatch(existing: ExistingContact, phone: string): boolean {
-  return normalizeKey(existing.phone) === normalizeKey(phone);
+  return existing.phone ? normalizeKey(existing.phone) === normalizeKey(phone) : false;
 }
 
 /**
@@ -80,7 +97,7 @@ export function isUniqueViolation(error: unknown): boolean {
  * (they can't be a valid contact). Returns the unique rows plus the
  * count removed as in-file duplicates.
  */
-export function dedupeByPhone<T extends { phone: string }>(
+export function dedupeByPhone<T extends { phone?: string | null }>(
   rows: T[],
 ): { unique: T[]; duplicates: number } {
   const seen = new Set<string>();
@@ -88,6 +105,10 @@ export function dedupeByPhone<T extends { phone: string }>(
   let duplicates = 0;
 
   for (const row of rows) {
+    if (!row.phone) {
+      duplicates++;
+      continue;
+    }
     const key = normalizeKey(row.phone);
     if (!key) {
       duplicates++;

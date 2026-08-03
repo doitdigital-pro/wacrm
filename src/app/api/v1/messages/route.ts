@@ -34,11 +34,13 @@
 import { requireApiKey } from '@/lib/auth/api-context';
 import { ok, fail, toApiErrorResponse } from '@/lib/api/v1/respond';
 import { resolveConversationByPhone } from '@/lib/whatsapp/resolve-conversation';
+import { resolveConversationByInstagram, SendInstagramMessageError } from '@/lib/instagram/resolve-conversation';
 import {
   sendMessageToConversation,
   validateSendMessageParams,
   SendMessageError,
 } from '@/lib/whatsapp/send-message';
+import { sendInstagramMessageToConversation } from '@/lib/instagram/send-message';
 import type { InteractiveMessagePayload } from '@/lib/whatsapp/interactive';
 
 export async function POST(request: Request) {
@@ -59,6 +61,7 @@ export async function POST(request: Request) {
     }
 
     const type = typeof body.type === 'string' ? body.type : 'text';
+    const channel = typeof body.channel === 'string' ? body.channel : 'whatsapp';
 
     // Unpack the optional `template` object into the flat params the
     // send core expects. `params` as an array → legacy positional body
@@ -98,47 +101,82 @@ export async function POST(request: Request) {
     // Find-or-create the conversation for this phone, then send. Both
     // steps share `SendMessageError`, so one catch maps the whole
     // pipeline to the envelope.
-    const resolved = await resolveConversationByPhone(
-      ctx.supabase,
-      ctx.accountId,
-      to,
-      typeof body.name === 'string' ? body.name : null
-    );
+    let resolved;
+    let result;
 
-    const result = await sendMessageToConversation(
-      ctx.supabase,
-      ctx.accountId,
-      {
-        conversationId: resolved.conversationId,
-        messageType: type,
-        contentText: typeof body.text === 'string' ? body.text : null,
-        mediaUrl: typeof body.media_url === 'string' ? body.media_url : null,
-        filename: typeof body.filename === 'string' ? body.filename : null,
-        templateName: typeof template?.name === 'string' ? template.name : null,
-        templateLanguage:
-          typeof template?.language === 'string' ? template.language : null,
-        templateParams,
-        templateMessageParams,
-        interactivePayload,
-        replyToMessageId:
-          typeof body.reply_to_message_id === 'string'
-            ? body.reply_to_message_id
-            : null,
-      }
-    );
-
-    return ok(
-      {
-        message_id: result.messageId,
-        whatsapp_message_id: result.whatsappMessageId,
-        conversation_id: resolved.conversationId,
-        contact_id: resolved.contactId,
-        contact_created: resolved.contactCreated,
-      },
-      201
-    );
+    if (channel === 'instagram') {
+      resolved = await resolveConversationByInstagram(
+        ctx.supabase,
+        ctx.accountId,
+        to,
+        typeof body.name === 'string' ? body.name : null
+      );
+      result = await sendInstagramMessageToConversation(
+        ctx.supabase,
+        ctx.accountId,
+        {
+          conversationId: resolved.conversationId,
+          messageType: type,
+          contentText: typeof body.text === 'string' ? body.text : null,
+          interactivePayload,
+          replyToMessageId:
+            typeof body.reply_to_message_id === 'string'
+              ? body.reply_to_message_id
+              : null,
+        }
+      );
+      
+      return ok(
+        {
+          message_id: result.messageId,
+          instagram_message_id: result.instagramMessageId,
+          conversation_id: resolved.conversationId,
+          contact_id: resolved.contactId,
+          contact_created: resolved.contactCreated,
+        },
+        201
+      );
+    } else {
+      resolved = await resolveConversationByPhone(
+        ctx.supabase,
+        ctx.accountId,
+        to,
+        typeof body.name === 'string' ? body.name : null
+      );
+      result = await sendMessageToConversation(
+        ctx.supabase,
+        ctx.accountId,
+        {
+          conversationId: resolved.conversationId,
+          messageType: type,
+          contentText: typeof body.text === 'string' ? body.text : null,
+          mediaUrl: typeof body.media_url === 'string' ? body.media_url : null,
+          filename: typeof body.filename === 'string' ? body.filename : null,
+          templateName: typeof template?.name === 'string' ? template.name : null,
+          templateLanguage:
+            typeof template?.language === 'string' ? template.language : null,
+          templateParams,
+          templateMessageParams,
+          interactivePayload,
+          replyToMessageId:
+            typeof body.reply_to_message_id === 'string'
+              ? body.reply_to_message_id
+              : null,
+        }
+      );
+      return ok(
+        {
+          message_id: result.messageId,
+          whatsapp_message_id: result.whatsappMessageId,
+          conversation_id: resolved.conversationId,
+          contact_id: resolved.contactId,
+          contact_created: resolved.contactCreated,
+        },
+        201
+      );
+    }
   } catch (err) {
-    if (err instanceof SendMessageError) {
+    if (err instanceof SendMessageError || err instanceof SendInstagramMessageError) {
       return fail(err.code, err.message, err.status);
     }
     return toApiErrorResponse(err);
