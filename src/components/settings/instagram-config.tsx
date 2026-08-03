@@ -173,7 +173,7 @@ export function InstagramConfig() {
       } else {
         toast.success(
           data.page_info?.name
-            ? `Live — ${data.page_info.name} can now receive events.`
+            ? `Live \u2014 ${data.page_info.name} can now receive events.`
             : 'Instagram connected. Events will start flowing within a minute.',
         );
       }
