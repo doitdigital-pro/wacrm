@@ -52,7 +52,7 @@ export async function GET() {
 
     const { data: config, error: configError } = await supabase
       .from('instagram_configs')
-      .select('app_id, app_secret, access_token, page_id, instagram_account_id, status, connected_at')
+      .select('app_id, app_secret, access_token, page_id, instagram_account_id, status, connected_at, verify_token')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -229,16 +229,16 @@ export async function POST(request: Request) {
     }
 
     // 1. Verify App ID + App Secret
-    let appInfo: { id: string; name: string }
+    // Note: With the new "Instagram API with Instagram Login", the App ID provided is the 
+    // Instagram sub-app ID, which might fail the standard Facebook Graph API verification.
+    // We will attempt verification but won't block the connection if it fails, 
+    // relying on the Access Token validation in step 2 instead.
+    let appInfo: { id: string; name: string } = { id: app_id, name: 'Instagram App' }
     try {
       appInfo = await verifyAppCredentials({ appId: app_id, appSecret: app_secret })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown Meta API error'
-      console.error('App credentials verification failed:', message)
-      return NextResponse.json(
-        { error: `Invalid App credentials: ${message}` },
-        { status: 400 }
-      )
+      console.warn('App credentials verification failed, continuing since it is likely an IG sub-app:', message)
     }
 
     // 2. Verify access token and get Instagram account info
@@ -331,13 +331,13 @@ export async function POST(request: Request) {
     }
 
     // Upsert config
-    const { data: existingRecord } = await supabase
+    const { data: existing } = await supabase
       .from('instagram_configs')
       .select('id')
       .eq('account_id', accountId)
       .maybeSingle()
 
-    if (existingRecord) {
+    if (existing) {
       const { error: updateError } = await supabase
         .from('instagram_configs')
         .update(baseRow)
