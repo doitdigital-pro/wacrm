@@ -1,13 +1,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { sendTextMessage } from '@/lib/instagram/meta-api';
+import { sendTextMessage, sendAction } from '@/lib/instagram/meta-api';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { SendInstagramMessageError } from '@/lib/instagram/resolve-conversation';
+import { InteractiveMessagePayload, interactivePayloadPreviewText } from '@/lib/whatsapp/interactive';
+import { decrypt } from '@/lib/whatsapp/encryption';
 
 export interface SendMessageParams {
   conversationId: string;
   messageType: string;
   contentText?: string | null;
-  interactivePayload?: unknown;
+  interactivePayload?: InteractiveMessagePayload | null;
   replyToMessageId?: string | null;
 }
 
@@ -21,7 +23,7 @@ export async function sendInstagramMessageToConversation(
   accountId: string,
   params: SendMessageParams
 ): Promise<SendMessageResult> {
-  const { conversationId, messageType, contentText, replyToMessageId } = params;
+  const { conversationId, messageType, contentText, interactivePayload, replyToMessageId } = params;
 
   if (!conversationId) {
     throw new SendInstagramMessageError('bad_request', 'conversation_id is required', 400);
@@ -69,9 +71,10 @@ export async function sendInstagramMessageToConversation(
 
   let igMessageId = '';
   try {
+    const decryptedToken = decrypt(config.access_token);
     const result = await sendTextMessage({
       pageId: config.page_id,
-      accessToken: config.access_token,
+      accessToken: decryptedToken,
       to: contact.instagram_user_id,
       text: contentText,
     });
@@ -121,9 +124,7 @@ export async function sendInstagramMessageToConversation(
       .eq('account_id', accountId)
       .eq('contact_id', contact.id)
       .eq('status', 'active');
-  } catch (_err) {
-    // best-effort
-  }
+  } catch (err) {}
 
   return { messageId: messageRecord.id, instagramMessageId: igMessageId };
 }
