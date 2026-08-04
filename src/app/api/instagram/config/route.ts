@@ -284,6 +284,12 @@ export async function POST(request: Request) {
     try {
       encryptedAppSecret = encrypt(app_secret)
       encryptedAccessToken = encrypt(access_token)
+      // If verify_token is passed in body, encrypt it. Otherwise, keep existing if it's an update where the user didn't change it.
+      // Wait, the UI sends verify_token if it was edited. If it wasn't edited, it sends null?
+      // Let's check UI logic: if (verifyTokenValue) payload.verify_token = verifyTokenValue;
+      // So if it's undefined in body, it means the user didn't edit it, or it's empty.
+      // If verify_token is explicitly null or empty, they cleared it. 
+      // If it's undefined, we keep the existing one.
       if (verify_token !== undefined) {
         encryptedVerifyToken = verify_token ? encrypt(verify_token) : null;
       } else {
@@ -317,7 +323,7 @@ export async function POST(request: Request) {
       app_secret: encryptedAppSecret,
       access_token: encryptedAccessToken,
       verify_token: encryptedVerifyToken,
-      page_id: page_id || null,
+      page_id: page_id || '',
       instagram_account_id: accountInfo.id,
       status: subscriptionError ? 'disconnected' : 'connected',
       connected_at: subscriptionError ? null : (subscribedAt || new Date().toISOString()),
