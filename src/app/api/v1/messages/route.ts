@@ -1,51 +1,111 @@
-import { NextResponse } from 'next/server';
-import { resolveConversation } from '@/lib/whatsapp/resolve-conversation';
+// ============================================================
+// POST /api/v1/messages — send a WhatsApp message via the public API.
+//
+// The headline public endpoint (issue #245). Unlike the dashboard's
+// `/api/whatsapp/send` (which takes an internal `conversation_id`),
+// this takes a phone number — what an external automation actually
+// has — resolves-or-creates the contact + conversation, then runs the
+// same shared send core.
+//
+// Auth: API key with the `messages:send` scope. Account context (and
+// the service-role client) come from `requireApiKey`.
+//
+// Body:
+//   {
+//     "to": "+14155550123",                 // required, E.164
+//     "type": "text",                        // text|template|image|video|document|audio (default: text)
+//     "text": "Hello!",                      // text body, or media caption
+//     "media_url": "https://…/file.pdf",     // required for image/video/document/audio
+//     "filename": "invoice.pdf",             // optional, document filename
+//     "template": {                          // required when type=template
+//       "name": "order_update",
+//       "language": "en_US",
+//       "params": ["A123"] | { "body": [...] }   // array = positional body; object = structured
+//     },
+//     "reply_to_message_id": "<uuid>",       // optional, must be in the same conversation
+//     "name": "Jane Doe"                     // optional, names a newly-created contact
+//   }
+//
+// Response (201):
+//   { "data": { "message_id", "whatsapp_message_id", "conversation_id",
+//               "contact_id", "contact_created" } }
+// ============================================================
+
+import { requireApiKey } from '@/lib/auth/api-context';
+import { ok, fail, toApiErrorResponse } from '@/lib/api/v1/respond';
+import { resolveConversationByPhone } from '@/lib/whatsapp/resolve-conversation';
+import { resolveConversationByInstagram, SendInstagramMessageError } from '@/lib/instagram/resolve-conversation';
 import {
   sendMessageToConversation,
+  validateSendMessageParams,
   SendMessageError,
 } from '@/lib/whatsapp/send-message';
-import { withAuth, ApiContext } from '@/lib/api/with-auth';
 import { sendInstagramMessageToConversation } from '@/lib/instagram/send-message';
-import { SendInstagramMessageError } from '@/lib/instagram/resolve-conversation';
+import type { InteractiveMessagePayload } from '@/lib/whatsapp/interactive';
 
-const SUPPORTED_TYPES = ['text', 'template', 'image', 'document', 'audio', 'video', 'interactive'];
-
-export const maxDuration = 60;
-
-/**
- * POST /api/v1/messages
- * Send a message to a WhatsApp number. Resolves or creates a conversation automatically.
- */
-async function sendMessageHandler(request: Request, ctx: ApiContext) {
+export async function POST(request: Request) {
   try {
-    const body = await request.json();
+    const ctx = await requireApiKey(request, 'messages:send');
 
-    const {
-      to,
-      type = 'text',
-      channel = 'whatsapp',
-    } = body;
-
-    if (!to || typeof to !== 'string') {
-      return errorResp('Missing or invalid "to" (phone number)', 400);
-    }
-    if (!SUPPORTED_TYPES.includes(type)) {
-      return errorResp(`Unsupported "type". Must be one of: ${SUPPORTED_TYPES.join(', ')}`, 400);
+    const body = (await request.json().catch(() => null)) as Record<
+      string,
+      unknown
+    > | null;
+    if (!body || typeof body !== 'object') {
+      return fail('bad_request', 'Request body must be a JSON object', 400);
     }
 
-    if (type === 'text' && (!body.text || typeof body.text !== 'string')) {
-      return errorResp('Missing or invalid "text" for text message', 400);
+    const to = typeof body.to === 'string' ? body.to.trim() : '';
+    if (!to) {
+      return fail('bad_request', "'to' is required", 400);
     }
 
-    const interactivePayload = type === 'interactive' ? body.interactive : null;
-    
+    const type = typeof body.type === 'string' ? body.type : 'text';
+    const channel = typeof body.channel === 'string' ? body.channel : 'whatsapp';
+
+    // Unpack the optional `template` object into the flat params the
+    // send core expects. `params` as an array → legacy positional body
+    // params; as an object → structured header/body/button params.
+    const template =
+      body.template && typeof body.template === 'object'
+        ? (body.template as Record<string, unknown>)
+        : null;
+    const templateParams = Array.isArray(template?.params)
+      ? (template.params as unknown[]).filter(
+          (p): p is string => typeof p === 'string'
+        )
+      : undefined;
+    const templateMessageParams =
+      template?.params && !Array.isArray(template.params)
+        ? template.params
+        : undefined;
+
+    // Validate the message shape BEFORE resolveConversationByPhone
+    // finds-or-creates a contact + conversation, so a bad payload 400s
+    // without leaving an orphan contact/conversation behind.
+    // Validated by `validateSendMessageParams` below; the cast just bridges
+    // the untyped JSON body to the send-core param type.
+    const interactivePayload =
+      body.interactive_payload && typeof body.interactive_payload === 'object'
+        ? (body.interactive_payload as InteractiveMessagePayload)
+        : null;
+
+    validateSendMessageParams({
+      messageType: type,
+      contentText: typeof body.text === 'string' ? body.text : null,
+      mediaUrl: typeof body.media_url === 'string' ? body.media_url : null,
+      templateName: typeof template?.name === 'string' ? template.name : null,
+      interactivePayload,
+    });
+
+    // Find-or-create the conversation for this phone, then send. Both
+    // steps share `SendMessageError`, so one catch maps the whole
+    // pipeline to the envelope.
+    let resolved;
     let result;
+
     if (channel === 'instagram') {
-      // Instagram route (uses a simplified resolver for now)
-      // We assume `to` is the IGSID (Instagram Scoped ID)
-      const { resolveConversationByInstagram } = await import('@/lib/instagram/resolve-conversation');
-      
-      const resolved = await resolveConversationByInstagram(
+      resolved = await resolveConversationByInstagram(
         ctx.supabase,
         ctx.accountId,
         to,
@@ -73,70 +133,54 @@ async function sendMessageHandler(request: Request, ctx: ApiContext) {
           message_id: result.messageId,
           instagram_message_id: result.instagramMessageId,
           conversation_id: resolved.conversationId,
-          status: 'sent',
+          contact_id: resolved.contactId,
+          contact_created: resolved.contactCreated,
         },
         201
       );
     } else {
-      // WhatsApp route
-      const resolved = await resolveConversation(
+      resolved = await resolveConversationByPhone(
         ctx.supabase,
         ctx.accountId,
         to,
         typeof body.name === 'string' ? body.name : null
       );
-      result = await sendMessageToConversation(ctx.supabase, ctx.accountId, {
-        conversationId: resolved.conversationId,
-        messageType: type,
-        contentText: typeof body.text === 'string' ? body.text : null,
-        mediaUrl: typeof body.media_url === 'string' ? body.media_url : null,
-        filename: typeof body.filename === 'string' ? body.filename : null,
-        templateName:
-          typeof body.template_name === 'string' ? body.template_name : null,
-        templateLanguage:
-          typeof body.template_language === 'string'
-            ? body.template_language
-            : null,
-        templateParams: Array.isArray(body.template_params)
-          ? body.template_params
-          : null,
-        templateMessageParams: Array.isArray(body.template_message_params)
-          ? body.template_message_params
-          : null,
-        interactivePayload,
-        replyToMessageId:
-          typeof body.reply_to_message_id === 'string'
-            ? body.reply_to_message_id
-            : null,
-      });
-
+      result = await sendMessageToConversation(
+        ctx.supabase,
+        ctx.accountId,
+        {
+          conversationId: resolved.conversationId,
+          messageType: type,
+          contentText: typeof body.text === 'string' ? body.text : null,
+          mediaUrl: typeof body.media_url === 'string' ? body.media_url : null,
+          filename: typeof body.filename === 'string' ? body.filename : null,
+          templateName: typeof template?.name === 'string' ? template.name : null,
+          templateLanguage:
+            typeof template?.language === 'string' ? template.language : null,
+          templateParams,
+          templateMessageParams,
+          interactivePayload,
+          replyToMessageId:
+            typeof body.reply_to_message_id === 'string'
+              ? body.reply_to_message_id
+              : null,
+        }
+      );
       return ok(
         {
           message_id: result.messageId,
-          meta_message_id: result.metaMessageId,
+          whatsapp_message_id: result.whatsappMessageId,
           conversation_id: resolved.conversationId,
-          status: 'sent',
+          contact_id: resolved.contactId,
+          contact_created: resolved.contactCreated,
         },
         201
       );
     }
-  } catch (err: any) {
+  } catch (err) {
     if (err instanceof SendMessageError || err instanceof SendInstagramMessageError) {
-      return errorResp(err.message, err.status, err.code);
+      return fail(err.code, err.message, err.status);
     }
-    console.error('[API] /v1/messages POST error:', err);
-    return errorResp('Internal server error', 500);
+    return toApiErrorResponse(err);
   }
-}
-
-export const POST = withAuth(sendMessageHandler);
-
-function ok(data: any, status = 200) {
-  return NextResponse.json(data, { status });
-}
-
-function errorResp(message: string, status: number, code?: string) {
-  const body: any = { error: { message } };
-  if (code) body.error.code = code;
-  return NextResponse.json(body, { status });
 }

@@ -1,57 +1,52 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { createClient } from '@/lib/supabase/server'
+import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import {
-  SendMessageError,
+  checkRateLimit,
+  rateLimitResponse,
+  RATE_LIMITS,
+} from '@/lib/rate-limit'
+import {
   sendMessageToConversation,
   validateSendMessageParams,
+  SendMessageError,
 } from '@/lib/whatsapp/send-message'
 import { sendInstagramMessageToConversation } from '@/lib/instagram/send-message'
 import { SendInstagramMessageError } from '@/lib/instagram/resolve-conversation'
 
-const maxDuration = 60
-
-/**
- * Validates the API key attached to the request. Returns the account ID if valid.
- */
-async function validateApiKey(
-  request: Request,
-  supabase: ReturnType<typeof createClient>
-): Promise<string | null> {
-  const authHeader = request.headers.get('Authorization')
-  if (!authHeader?.startsWith('Bearer ')) return null
-  const token = authHeader.split(' ')[1]
-
-  const { data: key, error } = await supabase
-    .from('api_keys')
-    .select('account_id, is_active')
-    .eq('token', token)
-    .single()
-
-  if (error || !key?.is_active) return null
-  return key.account_id
-}
-
-/**
- * Send a message via API (Dashboard or programmatic).
- */
+// The dashboard's outbound-send endpoint. It owns auth, per-user rate
+// limiting, and the two ways the UI targets a thread — an existing
+// `conversation_id` (inbox) or a `contact_id` (Contact detail →
+// find-or-create the conversation). The actual Meta plumbing (validate
+// → send → persist → pause flows) lives in the shared
+// `sendMessageToConversation` core, which the public `/api/v1/messages`
+// endpoint reuses. This route is a thin adapter: resolve the
+// conversation, delegate, then map `SendMessageError` back onto the
+// dashboard's internal `{ error }` shape.
 export async function POST(request: Request) {
-  // Use service role to bypass RLS since we authenticate via API key
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  )
-
-  const accountId = await validateApiKey(request, supabase)
-  if (!accountId) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
   try {
+    // Requires the 'agent' role, matching both `canSendMessages` and the
+    // `messages_modify` RLS policy (migration 017).
+    //
+    // Resolving `account_id` off the profile — which any 'viewer' has —
+    // was previously the only gate. RLS did block the message INSERT, but
+    // the send core calls Meta BEFORE it persists, so a viewer's request
+    // still delivered a real WhatsApp message to the customer and merely
+    // failed to record it (surfacing as "sent to Meta but failed to save
+    // to DB"). RLS can't un-send that, so the role check belongs here.
+    const { supabase, accountId, userId } = await requireRole('agent')
+
+    // Per-user rate limit. Bucket key is scoped to this route so
+    // `/broadcast` has an independent budget.
+    const limit = checkRateLimit(`send:${userId}`, RATE_LIMITS.send)
+    if (!limit.success) {
+      return rateLimitResponse(limit)
+    }
+
     const body = await request.json()
     const {
-      // Core fields: callers must provide (conversation_id) OR (contact_id + message_type)
-      // If contact_id is provided, we find an existing conversation or create one. This is
-      // used when a user clicks "Send message" from a Contact detail view where there isn't one
+      // `conversation_id` targets an existing thread (inbox). `contact_id`
+      // lets a caller initiate from a contact that may have no conversation
       // yet (Contact detail → Send template) — we find-or-create one below.
       conversation_id: conversationIdInput,
       contact_id,
@@ -127,7 +122,7 @@ export async function POST(request: Request) {
         .select('id')
         .eq('id', contact_id)
         .eq('account_id', accountId)
-        .single()
+        .maybeSingle()
 
       if (contactErr || !contactRow) {
         return NextResponse.json(
@@ -136,20 +131,13 @@ export async function POST(request: Request) {
         )
       }
 
-      // Check if a conversation exists on the requested channel.
-      const { data: existingConvs, error: existErr } = await supabase
-        .from('conversations')
-        .select('id')
-        .eq('account_id', accountId)
-        .eq('contact_id', contact_id)
-        .eq('channel', channel)
-        .order('updated_at', { ascending: false })
-        .limit(1)
-
-      let resolved: string | null = null
-      if (!existErr && existingConvs && existingConvs.length > 0) {
-        resolved = existingConvs[0].id
-      }
+      const resolved = await findOrCreateConversation(
+        supabase,
+        accountId,
+        userId,
+        contact_id,
+        channel
+      )
       if (!resolved) {
         return NextResponse.json(
           { error: 'Failed to open a conversation for this contact' },
@@ -204,23 +192,67 @@ export async function POST(request: Request) {
         return NextResponse.json({
           success: true,
           message_id: result.messageId,
-          meta_message_id: result.metaMessageId,
+          whatsapp_message_id: result.whatsappMessageId,
         })
       }
-    } catch (err) {
+    } catch (err: unknown) {
       if (err instanceof SendMessageError || err instanceof SendInstagramMessageError) {
         return NextResponse.json(
-          { error: err.message, code: err.code },
+          { error: err.message },
           { status: err.status }
         )
       }
       throw err
     }
   } catch (error) {
-    console.error('Error in send message API:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
+    // requireRole throws Unauthorized/Forbidden; toErrorResponse maps
+    // those to 401/403 and collapses anything else to a generic 500.
+    console.error('Error in WhatsApp send POST:', error)
+    return toErrorResponse(error)
   }
+}
+
+type SendSupabase = Awaited<ReturnType<typeof createClient>>
+
+/**
+ * Return the contact's conversation id in this account, creating one if
+ * it doesn't exist yet. Mirrors the webhook's find-or-create so an
+ * inbound-then-outbound (or outbound-first) sequence converges on a single
+ * thread per contact. Runs under the caller's RLS — the conversations_insert
+ * policy requires account agent membership, which the caller already is.
+ */
+async function findOrCreateConversation(
+  supabase: SendSupabase,
+  accountId: string,
+  userId: string,
+  contactId: string,
+  channel: string = 'whatsapp'
+): Promise<string | null> {
+  const { data: existing } = await supabase
+    .from('conversations')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('contact_id', contactId)
+    .eq('channel', channel)
+    .maybeSingle()
+
+  if (existing) return existing.id
+
+  const { data: created, error } = await supabase
+    .from('conversations')
+    .insert({
+      account_id: accountId,
+      user_id: userId,
+      contact_id: contactId,
+      channel,
+    })
+    .select('id')
+    .single()
+
+  if (error) {
+    console.error('Error creating conversation for contact send:', error.message)
+    return null
+  }
+
+  return created.id
 }
