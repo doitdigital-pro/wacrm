@@ -124,7 +124,8 @@ async function processWebhook(body: WebhookBody) {
         
         // DEBUG: If no config matches, let's insert a debug message into the FIRST available IG config 
         // so the user can see what recipient.id Meta actually sent!
-        const { data: anyConfig } = await supabaseAdmin().from('instagram_configs').select('*').limit(1).maybeSingle();
+        const { data } = await supabaseAdmin().from('instagram_configs').select('*').limit(1).maybeSingle();
+        const anyConfig = data as { account_id: string } | null;
         if (anyConfig) {
           const { conversationId } = await resolveConversationByInstagram(supabaseAdmin(), anyConfig.account_id, senderId, `DEBUG_${senderId}`);
           await (supabaseAdmin() as any).from('messages').insert({
