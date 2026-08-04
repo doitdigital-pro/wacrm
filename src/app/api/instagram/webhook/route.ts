@@ -1,6 +1,7 @@
 import { NextResponse, after } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { resolveConversationByInstagram } from '@/lib/instagram/resolve-conversation';
+import { decrypt } from '@/lib/whatsapp/encryption';
 
 export const maxDuration = 60;
 
@@ -52,9 +53,15 @@ export async function GET(request: Request) {
 
     let matched = false;
     for (const config of configs) {
-      if (config.verify_token === verifyToken) {
-        matched = true;
-        break;
+      if (!config.verify_token) continue;
+      try {
+        const decryptedToken = decrypt(config.verify_token);
+        if (decryptedToken === verifyToken) {
+          matched = true;
+          break;
+        }
+      } catch (err) {
+        console.error(`Failed to decrypt verify_token for config ${config.id}`, err);
       }
     }
 
