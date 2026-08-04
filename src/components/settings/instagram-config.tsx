@@ -59,6 +59,10 @@ export function InstagramConfig() {
   const [showAccessToken, setShowAccessToken] = useState(false);
   const [accessTokenEdited, setAccessTokenEdited] = useState(false);
 
+  // Webhook
+  const [verifyToken, setVerifyToken] = useState('');
+  const [savedVerifyToken, setSavedVerifyToken] = useState(false);
+
   // Optional page ID
   const [pageId, setPageId] = useState('');
 
@@ -83,7 +87,7 @@ export function InstagramConfig() {
     try {
       const { data, error } = await supabase
         .from('instagram_configs')
-        .select('app_id, page_id, instagram_account_id, status, connected_at')
+        .select('app_id, page_id, instagram_account_id, status, connected_at, verify_token')
         .eq('account_id', acctId)
         .maybeSingle();
 
@@ -98,6 +102,8 @@ export function InstagramConfig() {
         setAccessToken(MASKED);
         setAppSecretEdited(false);
         setAccessTokenEdited(false);
+        setVerifyToken(data.verify_token ? MASKED : '');
+        setSavedVerifyToken(!!data.verify_token);
       } else {
         setConfig(null);
         setAppId('');
@@ -105,6 +111,8 @@ export function InstagramConfig() {
         setPageId('');
         setAppSecret('');
         setAccessToken('');
+        setVerifyToken('');
+        setSavedVerifyToken(false);
         setAppSecretEdited(false);
         setAccessTokenEdited(false);
       }
@@ -163,14 +171,15 @@ export function InstagramConfig() {
     const isNewConfig = !config;
     const appSecretValue = appSecretEdited && appSecret !== MASKED ? appSecret.trim() : null;
     const accessTokenValue = accessTokenEdited && accessToken !== MASKED ? accessToken.trim() : null;
+    const verifyTokenValue = verifyToken !== MASKED ? verifyToken.trim() : null;
 
     if (isNewConfig && (!appSecretValue || !accessTokenValue)) {
       toast.error('App Secret and Access Token are required for initial setup');
       return;
     }
 
-    if (!isNewConfig && !appSecretEdited && !accessTokenEdited) {
-      toast.error('Re-enter App Secret or Access Token to update');
+    if (!isNewConfig && !appSecretEdited && !accessTokenEdited && verifyToken === MASKED && config.page_id === pageId) {
+      toast.error('No changes detected');
       return;
     }
 
@@ -190,8 +199,9 @@ export function InstagramConfig() {
 
     if (appSecretValue) payload.app_secret = appSecretValue;
     if (accessTokenValue) payload.access_token = accessTokenValue;
+    if (verifyTokenValue) payload.verify_token = verifyTokenValue;
 
-    if (!isNewConfig && !appSecretValue && !accessTokenValue) {
+    if (!isNewConfig && !appSecretValue && !accessTokenValue && !verifyTokenValue && config.page_id === pageId) {
       toast.error('To update, please re-enter at least one of: App Secret, Access Token');
       return;
     }
@@ -272,8 +282,8 @@ export function InstagramConfig() {
       toast.success('Configuration cleared. You can now re-enter your credentials.');
       setConfig(null);
       setAppId(''); setSavedAppId(''); setPageId('');
-      setAppSecret(''); setAccessToken('');
-      setAppSecretEdited(false); setAccessTokenEdited(false);
+      setAppSecret(''); setAccessToken(''); setVerifyToken('');
+      setAppSecretEdited(false); setAccessTokenEdited(false); setSavedVerifyToken(false);
       setConnectionStatus('disconnected');
       setNeedsReset(false); setStatusMessage(''); setAccountInfo(null);
     } catch {
@@ -486,27 +496,45 @@ export function InstagramConfig() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="space-y-2">
-                <Label className="text-muted-foreground text-sm">Callback URL</Label>
-                <div className="flex gap-2">
-                  <Input
-                    readOnly
-                    value={webhookUrl}
-                    className="bg-muted border-border text-muted-foreground font-mono text-xs"
-                  />
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={handleCopyWebhookUrl}
-                    className="shrink-0 border-border text-muted-foreground hover:text-foreground hover:bg-muted"
-                  >
-                    <Copy className="size-4" />
-                  </Button>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground text-sm">Callback URL</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      readOnly
+                      value={webhookUrl}
+                      className="bg-muted border-border text-muted-foreground font-mono text-xs"
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={handleCopyWebhookUrl}
+                      className="shrink-0 border-border text-muted-foreground hover:text-foreground hover:bg-muted"
+                    >
+                      <Copy className="size-4" />
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Subscribe to: <code className="bg-muted px-1 rounded text-[10px]">messages</code>{' '}
+                    <code className="bg-muted px-1 rounded text-[10px]">messaging_postbacks</code>
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Subscribe to: <code className="bg-muted px-1 rounded text-[10px]">messages</code>{' '}
-                  <code className="bg-muted px-1 rounded text-[10px]">messaging_postbacks</code>
-                </p>
+
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground text-sm">
+                    Webhook Verify Token <span className="text-muted-foreground/60 font-normal">(optional)</span>
+                  </Label>
+                  <Input
+                    placeholder="Create a secret token (e.g. my_secret_123)"
+                    value={verifyToken}
+                    onChange={(e) => setVerifyToken(e.target.value)}
+                    onFocus={() => { if (verifyToken === MASKED) setVerifyToken(''); }}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground font-mono"
+                  />
+                  {savedVerifyToken && verifyToken === MASKED && (
+                    <p className="text-xs text-muted-foreground">Saved securely &#8212; click to edit</p>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
