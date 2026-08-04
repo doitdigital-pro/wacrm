@@ -1,4 +1,4 @@
-import { NextResponse, after } from 'next/server';
+import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { resolveConversationByInstagram } from '@/lib/instagram/resolve-conversation';
 import { decrypt } from '@/lib/whatsapp/encryption';
@@ -89,14 +89,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  // Acknowledge quickly and process in background
-  after(async () => {
-    try {
-      await processWebhook(body);
-    } catch (error) {
-      console.error('Error processing IG webhook:', error);
-    }
-  });
+  try {
+    await processWebhook(body);
+  } catch (error) {
+    console.error('Error processing IG webhook:', error);
+  }
 
   return NextResponse.json({ status: 'received' }, { status: 200 });
 }
@@ -116,14 +113,31 @@ async function processWebhook(body: WebhookBody) {
 
       if (!message.text) continue; // Only handling text for now
 
-      // Find the IG config by page_id
+      // Find the IG config by instagram_account_id (or page_id as fallback)
       const { data: configRowsData, error: configError } = await supabaseAdmin()
         .from('instagram_configs')
         .select('*')
-        .eq('page_id', pageId);
+        .or(`instagram_account_id.eq.${pageId},page_id.eq.${pageId}`);
 
       if (configError || !configRowsData || configRowsData.length === 0) {
-        console.error('No IG config found for page_id:', pageId);
+        console.error('No IG config found for recipient ID:', pageId);
+        
+        // DEBUG: If no config matches, let's insert a debug message into the FIRST available IG config 
+        // so the user can see what recipient.id Meta actually sent!
+        const { data: anyConfig } = await supabaseAdmin().from('instagram_configs').select('*').limit(1).maybeSingle();
+        if (anyConfig) {
+          const { conversationId } = await resolveConversationByInstagram(supabaseAdmin(), anyConfig.account_id, senderId, `DEBUG_${senderId}`);
+          await (supabaseAdmin() as any).from('messages').insert({
+            conversation_id: conversationId,
+            sender_type: 'customer',
+            content_type: 'text',
+            content_text: `DEBUG: Config not found for recipient ${pageId}. Payload object: ${body.object}`,
+            message_id: message.mid || `debug_${Date.now()}`,
+            status: 'delivered',
+            created_at: new Date().toISOString(),
+          });
+          await (supabaseAdmin() as any).from('conversations').update({ last_message_text: `DEBUG: ${pageId}`, last_message_at: new Date().toISOString() }).eq('id', conversationId);
+        }
         continue;
       }
 
