@@ -16,6 +16,15 @@ interface MetaErrorResponse {
 export interface PageInfo {
   name: string;
   id: string;
+  username?: string;
+}
+
+export interface InstagramAccountInfo {
+  id: string;
+  name: string;
+  username: string;
+  profile_picture_url?: string;
+  followers_count?: number;
 }
 
 async function throwMetaError(response: Response, fallback: string): Promise<never> {
@@ -105,12 +114,78 @@ export async function sendAction(
   }
 }
 
+/**
+ * Verify app credentials using App ID and App Secret.
+ * Returns basic app info if valid.
+ */
+export async function verifyAppCredentials(args: {
+  appId: string;
+  appSecret: string;
+}): Promise<{ id: string; name: string }> {
+  const { appId, appSecret } = args;
+  const url = `${META_API_BASE}/${appId}?access_token=${appId}|${appSecret}&fields=id,name`;
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    await throwMetaError(response, 'Failed to verify app credentials. Check your App ID and App Secret.');
+  }
+
+  const data = await response.json();
+  if (!data.id) {
+    throw new Error('Invalid app credentials: no app ID returned');
+  }
+  return { id: data.id, name: data.name || 'Unknown App' };
+}
+
+/**
+ * Get Instagram account info using an access token.
+ * Returns the Instagram account ID, name, and username.
+ */
+export async function getInstagramAccountInfo(args: {
+  accessToken: string;
+}): Promise<InstagramAccountInfo> {
+  const { accessToken } = args;
+  const url = `${META_API_BASE}/me?access_token=${accessToken}&fields=id,name,username,profile_picture_url,followers_count`;
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    await throwMetaError(response, 'Failed to get account info. Check your Access Token.');
+  }
+
+  const data = await response.json();
+  return {
+    id: data.id,
+    name: data.name || data.username || 'Unknown Account',
+    username: data.username || '',
+    profile_picture_url: data.profile_picture_url,
+    followers_count: data.followers_count,
+  };
+}
+
+/**
+ * Exchange a short-lived token for a long-lived token using App Secret.
+ */
+export async function exchangeForLongLivedToken(args: {
+  appId: string;
+  appSecret: string;
+  shortLivedToken: string;
+}): Promise<{ access_token: string; token_type: string; expires_in: number }> {
+  const { appId, appSecret, shortLivedToken } = args;
+  const url = `${META_API_BASE}/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`;
+  
+  const response = await fetch(url);
+  if (!response.ok) {
+    await throwMetaError(response, 'Failed to exchange token for long-lived token.');
+  }
+
+  return response.json();
+}
+
 export async function verifyPageInfo(args: {
   pageId: string;
   accessToken: string;
 }): Promise<PageInfo> {
   const { pageId, accessToken } = args;
-  // This endpoint returns the name and id of the page/ig account to verify tokens.
   const url = `${META_API_BASE}/${pageId}?access_token=${accessToken}`;
   const response = await fetch(url);
   
@@ -122,6 +197,7 @@ export async function verifyPageInfo(args: {
   return {
     name: data.name || data.username || 'Unknown Page',
     id: data.id,
+    username: data.username,
   };
 }
 
@@ -132,7 +208,6 @@ export async function subscribePageToApp(args: {
   const { pageId, accessToken } = args;
   const url = `${META_API_BASE}/${pageId}/subscribed_apps`;
   
-  // Need to subscribe to 'messages' and 'messaging_postbacks'
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -146,4 +221,3 @@ export async function subscribePageToApp(args: {
     await throwMetaError(response, `Failed to subscribe page to app webhook events`);
   }
 }
-

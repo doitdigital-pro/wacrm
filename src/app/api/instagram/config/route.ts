@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
-import { verifyPageInfo, subscribePageToApp } from '@/lib/instagram/meta-api'
-import { encrypt, decrypt } from '@/lib/whatsapp/encryption' // we can reuse the same encryption
+import { verifyAppCredentials, getInstagramAccountInfo, subscribePageToApp } from '@/lib/instagram/meta-api'
+import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 
 async function resolveAccountId(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -45,18 +45,14 @@ export async function GET() {
     const accountId = await resolveAccountId(supabase, user.id)
     if (!accountId) {
       return NextResponse.json(
-        {
-          connected: false,
-          reason: 'no_account',
-          message: 'Your profile is not linked to an account.',
-        },
+        { connected: false, reason: 'no_account', message: 'Your profile is not linked to an account.' },
         { status: 200 },
       )
     }
 
     const { data: config, error: configError } = await supabase
       .from('instagram_configs')
-      .select('page_id, access_token, status')
+      .select('app_id, app_secret, access_token, page_id, instagram_account_id, status, connected_at')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -73,48 +69,82 @@ export async function GET() {
         {
           connected: false,
           reason: 'no_config',
-          message: 'No Instagram configuration saved yet. Fill in the form and click Save Configuration.',
+          message: 'No Instagram configuration saved yet.',
+          has_app_id: false,
+          has_access_token: false,
         },
         { status: 200 }
       )
     }
 
-    let accessToken: string
-    try {
-      accessToken = decrypt(config.access_token)
-    } catch (err) {
-      console.error('[instagram/config GET] Token decryption failed:', err)
-      return NextResponse.json(
-        {
-          connected: false,
-          reason: 'token_corrupted',
-          needs_reset: true,
-          message:
-            'The stored access token cannot be decrypted with the current ENCRYPTION_KEY. Click "Reset Configuration" below, then re-save.',
-        },
-        { status: 200 }
-      )
+    const hasAppId = Boolean(config.app_id)
+    const hasAppSecret = Boolean(config.app_secret)
+    const hasAccessToken = Boolean(config.access_token)
+    const hasPageId = Boolean(config.page_id)
+
+    if (hasAppId && hasAppSecret && hasAccessToken) {
+      let accessToken: string
+      try {
+        decrypt(config.app_secret) // verify app_secret is decryptable
+        accessToken = decrypt(config.access_token)
+      } catch (err) {
+        console.error('[instagram/config GET] Token decryption failed:', err)
+        return NextResponse.json(
+          {
+            connected: false,
+            reason: 'token_corrupted',
+            needs_reset: true,
+            has_app_id: hasAppId,
+            has_access_token: hasAccessToken,
+            message: 'The stored credentials cannot be decrypted. Please reset the configuration.',
+          },
+          { status: 200 }
+        )
+      }
+
+      try {
+        const accountInfo = await getInstagramAccountInfo({ accessToken })
+        return NextResponse.json({
+          connected: true,
+          has_app_id: hasAppId,
+          has_access_token: hasAccessToken,
+          has_page_id: hasPageId,
+          app_id: config.app_id,
+          instagram_account_id: config.instagram_account_id || accountInfo.id,
+          account_info: {
+            id: accountInfo.id,
+            name: accountInfo.name,
+            username: accountInfo.username,
+            profile_picture_url: accountInfo.profile_picture_url,
+            followers_count: accountInfo.followers_count,
+          },
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown Meta API error'
+        console.error('[instagram/config GET] Token validation failed:', message)
+        return NextResponse.json(
+          {
+            connected: false,
+            reason: 'token_invalid',
+            has_app_id: hasAppId,
+            has_access_token: hasAccessToken,
+            app_id: config.app_id,
+            message: `Access token is invalid or expired: ${message}`,
+          },
+          { status: 200 }
+        )
+      }
     }
 
-    // Validate credentials against Meta
-    try {
-      const pageInfo = await verifyPageInfo({
-        pageId: config.page_id,
-        accessToken,
-      })
-      return NextResponse.json({ connected: true, page_info: pageInfo })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown Meta API error'
-      console.error('[instagram/config GET] Meta API verification failed:', message)
-      return NextResponse.json(
-        {
-          connected: false,
-          reason: 'meta_api_error',
-          message: `Meta API rejected the credentials: ${message}`,
-        },
-        { status: 200 }
-      )
-    }
+    return NextResponse.json({
+      connected: false,
+      reason: 'incomplete_config',
+      has_app_id: hasAppId,
+      has_access_token: hasAccessToken,
+      has_page_id: hasPageId,
+      app_id: config.app_id,
+      message: 'Configuration is incomplete. Please provide App ID, App Secret, and Access Token.',
+    })
   } catch (error) {
     console.error('Error in Instagram config GET:', error)
     return NextResponse.json(
@@ -146,24 +176,58 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { page_id, access_token, verify_token } = body
+    const { app_id, app_secret, access_token, page_id, verify_token } = body
 
-    if (!access_token || !page_id) {
+    if (!app_id || !app_secret) {
       return NextResponse.json(
-        { error: 'access_token and page_id are required' },
+        { error: 'App ID and App Secret are required' },
         { status: 400 }
       )
     }
 
+    if (!access_token) {
+      return NextResponse.json(
+        { error: 'Access Token is required' },
+        { status: 400 }
+      )
+    }
+
+    // 1. Verify App ID + App Secret
+    let appInfo: { id: string; name: string }
+    try {
+      appInfo = await verifyAppCredentials({ appId: app_id, appSecret: app_secret })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown Meta API error'
+      console.error('App credentials verification failed:', message)
+      return NextResponse.json(
+        { error: `Invalid App credentials: ${message}` },
+        { status: 400 }
+      )
+    }
+
+    // 2. Verify access token and get Instagram account info
+    let accountInfo: { id: string; name: string; username: string }
+    try {
+      accountInfo = await getInstagramAccountInfo({ accessToken: access_token })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown Meta API error'
+      console.error('Access token validation failed:', message)
+      return NextResponse.json(
+        { error: `Invalid Access Token: ${message}` },
+        { status: 400 }
+      )
+    }
+
+    // 3. Check if this app_id is already claimed by another account
     const { data: claimed, error: claimedError } = await supabaseAdmin()
       .from('instagram_configs')
       .select('account_id')
-      .eq('page_id', page_id)
+      .eq('app_id', app_id)
       .neq('account_id', accountId)
       .maybeSingle()
 
     if (claimedError) {
-      console.error('Error checking page_id ownership:', claimedError)
+      console.error('Error checking app_id ownership:', claimedError)
       return NextResponse.json(
         { error: 'Failed to validate configuration' },
         { status: 500 }
@@ -172,74 +236,59 @@ export async function POST(request: Request) {
 
     if (claimed) {
       return NextResponse.json(
-        {
-          error:
-            'This Instagram Page ID is already linked to another account on this instance.',
-        },
+        { error: 'This Instagram App ID is already linked to another account on this instance.' },
         { status: 409 }
       )
     }
 
-    let pageInfo
-    try {
-      pageInfo = await verifyPageInfo({
-        pageId: page_id,
-        accessToken: access_token,
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown Meta API error'
-      console.error('Meta API verification failed during save:', message)
-      return NextResponse.json(
-        { error: `Meta API error: ${message}` },
-        { status: 400 }
-      )
-    }
-
+    // 4. Encrypt sensitive fields
+    let encryptedAppSecret: string
     let encryptedAccessToken: string
     let encryptedVerifyToken: string | null
     try {
+      encryptedAppSecret = encrypt(app_secret)
       encryptedAccessToken = encrypt(access_token)
       encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown encryption error'
       console.error('Encryption failed:', message)
       return NextResponse.json(
-        {
-          error:
-            'Failed to encrypt token. Check that ENCRYPTION_KEY is a valid 64-character hex string in your environment variables.',
-        },
+        { error: 'Failed to encrypt credentials. Check ENCRYPTION_KEY environment variable.' },
         { status: 500 }
       )
     }
 
-    const { data: existing } = await supabase
-      .from('instagram_configs')
-      .select('id, connected_at, page_id')
-      .eq('account_id', accountId)
-      .maybeSingle()
-
+    // 5. Try to subscribe page to webhook events (optional)
     let subscribedAt: string | null = null
     let subscriptionError: string | null = null
 
-    try {
-      await subscribePageToApp({
-        pageId: page_id,
-        accessToken: access_token,
-      })
-      subscribedAt = new Date().toISOString()
-    } catch (err) {
-      subscriptionError = err instanceof Error ? err.message : 'Unknown Meta API error'
-      console.error('Page subscribed_apps failed:', subscriptionError)
+    if (page_id) {
+      try {
+        await subscribePageToApp({ pageId: page_id, accessToken: access_token })
+        subscribedAt = new Date().toISOString()
+      } catch (err) {
+        subscriptionError = err instanceof Error ? err.message : 'Unknown Meta API error'
+        console.error('Page subscribed_apps failed:', subscriptionError)
+      }
     }
 
     const baseRow = {
-      page_id,
+      app_id,
+      app_secret: encryptedAppSecret,
       access_token: encryptedAccessToken,
       verify_token: encryptedVerifyToken,
+      page_id: page_id || null,
+      instagram_account_id: accountInfo.id,
       status: subscriptionError ? 'disconnected' : 'connected',
       connected_at: subscriptionError ? null : (subscribedAt || new Date().toISOString()),
       updated_at: new Date().toISOString(),
     }
+
+    const { data: existing } = await supabase
+      .from('instagram_configs')
+      .select('id')
+      .eq('account_id', accountId)
+      .maybeSingle()
 
     if (existing) {
       const { error: updateError } = await supabase
@@ -249,26 +298,16 @@ export async function POST(request: Request) {
 
       if (updateError) {
         console.error('Error updating instagram_configs:', updateError)
-        return NextResponse.json(
-          { error: 'Failed to update configuration' },
-          { status: 500 }
-        )
+        return NextResponse.json({ error: 'Failed to update configuration' }, { status: 500 })
       }
     } else {
       const { error: insertError } = await supabase
         .from('instagram_configs')
-        .insert({
-          account_id: accountId,
-          user_id: user.id,
-          ...baseRow,
-        })
+        .insert({ account_id: accountId, user_id: user.id, ...baseRow })
 
       if (insertError) {
         console.error('Error inserting instagram_configs:', insertError)
-        return NextResponse.json(
-          { error: 'Failed to save configuration' },
-          { status: 500 }
-        )
+        return NextResponse.json({ error: 'Failed to save configuration' }, { status: 500 })
       }
     }
 
@@ -278,15 +317,17 @@ export async function POST(request: Request) {
         saved: true,
         registered: false,
         registration_error: subscriptionError,
-        page_info: pageInfo,
+        app_info: appInfo,
+        account_info: accountInfo,
       })
     }
 
     return NextResponse.json({
       success: true,
       saved: true,
-      registered: true,
-      page_info: pageInfo,
+      registered: Boolean(page_id),
+      app_info: appInfo,
+      account_info: accountInfo,
     })
   } catch (error) {
     console.error('Error in Instagram config POST:', error)
@@ -322,10 +363,7 @@ export async function DELETE() {
 
     if (deleteError) {
       console.error('Error deleting instagram_configs:', deleteError)
-      return NextResponse.json(
-        { error: 'Failed to delete configuration' },
-        { status: 500 }
-      )
+      return NextResponse.json({ error: 'Failed to delete configuration' }, { status: 500 })
     }
 
     return NextResponse.json({ success: true })
