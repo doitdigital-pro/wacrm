@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { resolveConversationByInstagram } from '@/lib/instagram/resolve-conversation';
 import { decrypt } from '@/lib/whatsapp/encryption';
@@ -142,15 +142,27 @@ async function processWebhook(body: WebhookBody) {
         continue;
       }
 
-      const configRows = configRowsData as { account_id: string }[];
+      const configRows = configRowsData as { account_id: string; access_token: string }[];
       const config = configRows[0];
+
+      let senderName = `IG_${senderId}`;
+      try {
+        const { getInstagramUserProfile } = await import('@/lib/instagram/meta-api');
+        const profile = await getInstagramUserProfile({
+          igScopedId: senderId,
+          accessToken: decrypt(config.access_token)
+        });
+        senderName = profile.name;
+      } catch (err) {
+        console.error('Failed to fetch sender profile:', err);
+      }
 
       // Resolve contact and conversation
       const { conversationId, contactId } = await resolveConversationByInstagram(
         supabaseAdmin(),
         config.account_id,
         senderId,
-        `IG_${senderId}`
+        senderName
       );
 
       // Insert message

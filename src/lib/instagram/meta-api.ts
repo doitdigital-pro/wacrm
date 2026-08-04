@@ -228,3 +228,36 @@ export async function subscribePageToApp(args: {
     await throwMetaError(response, `Failed to subscribe page to app webhook events`);
   }
 }
+
+/**
+ * Fetch the Instagram user's profile information using their IGSID.
+ */
+export async function getInstagramUserProfile(args: {
+  igScopedId: string;
+  accessToken: string;
+}): Promise<{ name: string; username: string; profile_picture_url?: string }> {
+  const { igScopedId, accessToken } = args;
+  
+  const isIgToken = accessToken.startsWith('IG');
+  const baseUrl = isIgToken ? `https://graph.instagram.com/${META_API_VERSION}` : META_API_BASE;
+  
+  const url = `${baseUrl}/${igScopedId}?access_token=${accessToken}&fields=name,username,profile_picture_url`;
+  
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.error(`[Meta API] Failed to fetch profile for ${igScopedId}:`, await response.text());
+      return { name: `IG_${igScopedId}`, username: '' };
+    }
+    
+    const data = await response.json();
+    return {
+      name: data.name || data.username || `IG_${igScopedId}`,
+      username: data.username || '',
+      profile_picture_url: data.profile_picture_url,
+    };
+  } catch (err) {
+    console.error(`[Meta API] Error fetching profile for ${igScopedId}:`, err);
+    return { name: `IG_${igScopedId}`, username: '' };
+  }
+}
