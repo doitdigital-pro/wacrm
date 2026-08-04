@@ -79,6 +79,90 @@ export async function sendTextMessage(
   return { messageId: data.message_id };
 }
 
+export type IgMediaKind = 'image' | 'video' | 'audio' | 'file';
+
+export interface SendMediaMessageArgs {
+  pageId: string;
+  accessToken: string;
+  to: string;
+  kind: IgMediaKind;
+  /** Public URL of the media file */
+  link: string;
+  /** Optional caption (not supported on audio) */
+  caption?: string;
+}
+
+/**
+ * Send a media message (image, video, audio, file/document) via Instagram.
+ *
+ * Instagram's messaging API uses an attachment-based payload:
+ *   message.attachment.type = 'image' | 'video' | 'audio' | 'file'
+ *   message.attachment.payload.url = <public URL>
+ */
+export async function sendMediaMessage(
+  args: SendMediaMessageArgs
+): Promise<MetaSendResult> {
+  const { pageId, accessToken, to, kind, link, caption } = args;
+  if (!link) throw new Error('sendMediaMessage requires a link.');
+
+  const isIgToken = accessToken.startsWith('IG');
+  const baseUrl = isIgToken ? `https://graph.instagram.com/${META_API_VERSION}` : META_API_BASE;
+  const endpoint = isIgToken ? 'me' : pageId;
+  const url = `${baseUrl}/${endpoint}/messages`;
+
+  // Map our internal types to Instagram's attachment types
+  const igType = kind === 'file' ? 'file' : kind;
+
+  // Build the message payload
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const messagePayload: any = {
+    attachment: {
+      type: igType,
+      payload: {
+        url: link,
+      },
+    },
+  };
+
+  // If there's a caption and it's not audio, send it as a separate text after
+  // (Instagram doesn't support captions on attachment messages natively,
+  // but we can include it as text in a follow-up or as part of the message)
+
+  const body = {
+    recipient: { id: to },
+    message: messagePayload,
+  };
+
+  console.log(`[IG Meta API] Sending ${kind} to ${to} via ${url}`);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const messageId = data.message_id;
+
+  // If there's a caption, send it as a follow-up text message
+  if (caption && kind !== 'audio') {
+    try {
+      await sendTextMessage({ pageId, accessToken, to, text: caption });
+    } catch (err) {
+      console.warn('[IG Meta API] Failed to send caption as follow-up text:', err);
+    }
+  }
+
+  return { messageId };
+}
+
 export interface SendActionArgs {
   pageId: string;
   accessToken: string;

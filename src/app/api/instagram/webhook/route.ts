@@ -5,11 +5,20 @@ import { decrypt } from '@/lib/whatsapp/encryption';
 
 export const maxDuration = 60;
 
+type IgAttachment = {
+  type: string; // 'image' | 'video' | 'audio' | 'file' | 'share' | 'story_mention' etc.
+  payload?: { url?: string };
+};
+
 type WebhookBody = {
   object?: string;
   entry?: Array<{
     messaging?: Array<{
-      message?: { text?: string; mid?: string };
+      message?: {
+        text?: string;
+        mid?: string;
+        attachments?: IgAttachment[];
+      };
       sender?: { id: string };
       recipient?: { id: string };
       timestamp?: number;
@@ -111,7 +120,30 @@ async function processWebhook(body: WebhookBody) {
       const pageId = event.recipient.id;
       const message = event.message;
 
-      if (!message.text) continue; // Only handling text for now
+      // Determine content type and extract media URL if present
+      const attachment = message.attachments?.[0];
+      let contentType = 'text';
+      let contentText = message.text || null;
+      let mediaUrl: string | null = null;
+
+      if (attachment) {
+        const attType = attachment.type;
+        // Map Instagram attachment types to our internal types
+        if (attType === 'image' || attType === 'video' || attType === 'audio' || attType === 'file') {
+          contentType = attType === 'file' ? 'document' : attType;
+          mediaUrl = attachment.payload?.url || null;
+        } else if (attType === 'share' || attType === 'story_mention') {
+          // Shares and story mentions - treat as text with a note
+          contentType = 'text';
+          contentText = contentText || `[${attType === 'share' ? 'Shared post' : 'Story mention'}]`;
+        } else {
+          contentType = 'text';
+          contentText = contentText || `[Unsupported attachment: ${attType}]`;
+        }
+      }
+
+      // Skip if there's no text AND no media
+      if (!contentText && !mediaUrl) continue;
 
       // Find the IG config by instagram_account_id (or page_id as fallback)
       const { data: configRowsData, error: configError } = await supabaseAdmin()
@@ -141,7 +173,7 @@ async function processWebhook(body: WebhookBody) {
         
         console.log(`[IG Webhook] Profile result for ${senderId}: name="${profile.name}", username="${profile.username}"`);
         
-        // Prefer username for display, fall back to name
+        // Prefer username with @ for display, fall back to name
         if (profile.username) {
           senderName = profile.username;
         } else if (profile.name && !profile.name.startsWith('IG_')) {
@@ -165,8 +197,9 @@ async function processWebhook(body: WebhookBody) {
         .insert({
           conversation_id: conversationId,
           sender_type: 'customer',
-          content_type: 'text',
-          content_text: message.text,
+          content_type: contentType,
+          content_text: contentText,
+          media_url: mediaUrl,
           message_id: message.mid,
           status: 'delivered',
           created_at: new Date(event.timestamp || Date.now()).toISOString(),
@@ -178,10 +211,11 @@ async function processWebhook(body: WebhookBody) {
       }
 
       // Update conversation
+      const previewText = contentText || (mediaUrl ? `📎 ${contentType}` : '');
       await (supabaseAdmin() as any)
         .from('conversations')
         .update({
-          last_message_text: message.text,
+          last_message_text: previewText,
           last_message_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
