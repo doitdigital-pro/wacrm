@@ -12,6 +12,9 @@ import {
   Zap,
   AlertTriangle,
   RotateCcw,
+  User,
+  Users,
+  ExternalLink,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
@@ -23,10 +26,17 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { SettingsPanelHead } from './settings-panel-head';
 
-const MASKED_TOKEN = '••••••••••••••••';
+const MASKED = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
 
 type ConnectionStatus = 'connected' | 'disconnected' | 'unknown';
-type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
+
+interface AccountInfo {
+  id: string;
+  name: string;
+  username: string;
+  profile_picture_url?: string;
+  followers_count?: number;
+}
 
 export function InstagramConfig() {
   const t = useTranslations('Settings.instagram');
@@ -37,18 +47,31 @@ export function InstagramConfig() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [showToken, setShowToken] = useState(false);
+
+  // App credentials
+  const [appId, setAppId] = useState('');
+  const [appSecret, setAppSecret] = useState('');
+  const [showAppSecret, setShowAppSecret] = useState(false);
+  const [appSecretEdited, setAppSecretEdited] = useState(false);
+
+  // Access token
+  const [accessToken, setAccessToken] = useState('');
+  const [showAccessToken, setShowAccessToken] = useState(false);
+  const [accessTokenEdited, setAccessTokenEdited] = useState(false);
+
+  // Optional page ID
+  const [pageId, setPageId] = useState('');
+
+  // Connection status
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
+  const [statusMessage, setStatusMessage] = useState('');
+  const [needsReset, setNeedsReset] = useState(false);
+  const [accountInfo, setAccountInfo] = useState<AccountInfo | null>(null);
+  const [savedAppId, setSavedAppId] = useState('');
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [config, setConfig] = useState<any>(null);
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
-  const [resetReason, setResetReason] = useState<ResetReason>(null);
-  const [statusMessage, setStatusMessage] = useState<string>('');
   const loadedAccountIdRef = useRef<string | null>(null);
-
-  const [pageId, setPageId] = useState('');
-  const [accessToken, setAccessToken] = useState('');
-  const [verifyToken, setVerifyToken] = useState('');
-  const [tokenEdited, setTokenEdited] = useState(false);
 
   const webhookUrl =
     typeof window !== 'undefined'
@@ -60,26 +83,30 @@ export function InstagramConfig() {
     try {
       const { data, error } = await supabase
         .from('instagram_configs')
-        .select('*')
+        .select('app_id, page_id, instagram_account_id, status, connected_at')
         .eq('account_id', acctId)
         .maybeSingle();
 
-      if (error) {
-        console.error('Failed to load config row:', error);
-      }
+      if (error) console.error('Failed to load config row:', error);
 
       if (data) {
         setConfig(data);
+        setAppId(data.app_id || '');
+        setSavedAppId(data.app_id || '');
         setPageId(data.page_id || '');
-        setAccessToken(MASKED_TOKEN);
-        setVerifyToken('');
-        setTokenEdited(false);
+        setAppSecret(MASKED);
+        setAccessToken(MASKED);
+        setAppSecretEdited(false);
+        setAccessTokenEdited(false);
       } else {
         setConfig(null);
+        setAppId('');
+        setSavedAppId('');
         setPageId('');
+        setAppSecret('');
         setAccessToken('');
-        setVerifyToken('');
-        setTokenEdited(false);
+        setAppSecretEdited(false);
+        setAccessTokenEdited(false);
       }
 
       if (data) {
@@ -89,21 +116,23 @@ export function InstagramConfig() {
 
           if (payload.connected) {
             setConnectionStatus('connected');
-            setResetReason(null);
+            setNeedsReset(false);
             setStatusMessage('');
+            setAccountInfo(payload.account_info || null);
           } else {
             setConnectionStatus('disconnected');
-            setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
+            setNeedsReset(payload.needs_reset || false);
             setStatusMessage(payload.message || '');
+            setAccountInfo(null);
           }
-        } catch (err) {
-          console.error('Health check failed:', err);
+        } catch {
           setConnectionStatus('disconnected');
         }
       } else {
         setConnectionStatus('disconnected');
-        setResetReason(null);
+        setNeedsReset(false);
         setStatusMessage('');
+        setAccountInfo(null);
       }
     } catch (err) {
       console.error('fetchConfig error:', err);
@@ -126,31 +155,49 @@ export function InstagramConfig() {
   }, [authLoading, profileLoading, user?.id, accountId, fetchConfig]);
 
   async function handleSave() {
-    if (!pageId.trim()) {
-      toast.error('Page ID is required');
+    if (!appId.trim()) {
+      toast.error('App ID is required');
       return;
     }
-    if (!config && (!accessToken.trim() || !tokenEdited)) {
-      toast.error('Access Token is required for initial setup');
+
+    const isNewConfig = !config;
+    const appSecretValue = appSecretEdited && appSecret !== MASKED ? appSecret.trim() : null;
+    const accessTokenValue = accessTokenEdited && accessToken !== MASKED ? accessToken.trim() : null;
+
+    if (isNewConfig && (!appSecretValue || !accessTokenValue)) {
+      toast.error('App Secret and Access Token are required for initial setup');
+      return;
+    }
+
+    if (!isNewConfig && !appSecretEdited && !accessTokenEdited) {
+      toast.error('Re-enter App Secret or Access Token to update');
+      return;
+    }
+
+    if (!isNewConfig && appSecretEdited && !appSecretValue) {
+      toast.error('Please enter a valid App Secret');
+      return;
+    }
+    if (!isNewConfig && accessTokenEdited && !accessTokenValue) {
+      toast.error('Please enter a valid Access Token');
+      return;
+    }
+
+    const payload: Record<string, unknown> = {
+      app_id: appId.trim(),
+      page_id: pageId.trim() || null,
+    };
+
+    if (appSecretValue) payload.app_secret = appSecretValue;
+    if (accessTokenValue) payload.access_token = accessTokenValue;
+
+    if (!isNewConfig && !appSecretValue && !accessTokenValue) {
+      toast.error('To update, please re-enter at least one of: App Secret, Access Token');
       return;
     }
 
     try {
       setSaving(true);
-
-      const payload: Record<string, unknown> = {
-        page_id: pageId.trim(),
-        verify_token: verifyToken.trim() || null,
-      };
-
-      if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
-        payload.access_token = accessToken.trim();
-      } else if (config) {
-        toast.error('Please re-enter the Access Token to save changes');
-        setSaving(false);
-        return;
-      }
-
       const res = await fetch('/api/instagram/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -161,21 +208,13 @@ export function InstagramConfig() {
 
       if (!res.ok) {
         toast.error(data.error || 'Failed to save configuration');
-        setSaving(false);
         return;
       }
 
-      if (data.registered === false && data.registration_error) {
-        toast.error(
-          `Saved, but Meta couldn't register the page: ${data.registration_error}`,
-          { duration: 12000 },
-        );
+      if (data.account_info) {
+        toast.success(`Connected to @${data.account_info.username || data.account_info.name}`);
       } else {
-        toast.success(
-          data.page_info?.name
-            ? `Live \u2014 ${data.page_info.name} can now receive events.`
-            : 'Instagram connected. Events will start flowing within a minute.',
-        );
+        toast.success('Configuration saved successfully');
       }
 
       if (accountId) await fetchConfig(accountId);
@@ -195,21 +234,22 @@ export function InstagramConfig() {
 
       if (payload.connected) {
         setConnectionStatus('connected');
-        setResetReason(null);
+        setNeedsReset(false);
         setStatusMessage('');
+        setAccountInfo(payload.account_info || null);
         toast.success(
-          payload.page_info?.name
-            ? `Connected to ${payload.page_info.name}`
-            : 'API connection successful'
+          payload.account_info?.username
+            ? `Connected to @${payload.account_info.username}`
+            : 'Connection successful'
         );
       } else {
         setConnectionStatus('disconnected');
-        setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
+        setNeedsReset(payload.needs_reset || false);
         setStatusMessage(payload.message || '');
-        toast.error(payload.message || 'API connection failed');
+        setAccountInfo(null);
+        toast.error(payload.message || 'Connection test failed');
       }
-    } catch (err) {
-      console.error('Test connection error:', err);
+    } catch {
       setConnectionStatus('disconnected');
       toast.error('Connection test failed. Check network and try again.');
     } finally {
@@ -218,10 +258,7 @@ export function InstagramConfig() {
   }
 
   async function handleReset() {
-    if (!confirm('This will delete the current Instagram config so you can re-enter it. Continue?')) {
-      return;
-    }
-
+    if (!confirm('This will delete the current Instagram config. Continue?')) return;
     try {
       setResetting(true);
       const res = await fetch('/api/instagram/config', { method: 'DELETE' });
@@ -234,15 +271,12 @@ export function InstagramConfig() {
 
       toast.success('Configuration cleared. You can now re-enter your credentials.');
       setConfig(null);
-      setPageId('');
-      setAccessToken('');
-      setVerifyToken('');
-      setTokenEdited(false);
+      setAppId(''); setSavedAppId(''); setPageId('');
+      setAppSecret(''); setAccessToken('');
+      setAppSecretEdited(false); setAccessTokenEdited(false);
       setConnectionStatus('disconnected');
-      setResetReason(null);
-      setStatusMessage('');
-    } catch (err) {
-      console.error('Reset error:', err);
+      setNeedsReset(false); setStatusMessage(''); setAccountInfo(null);
+    } catch {
       toast.error('Failed to reset configuration');
     } finally {
       setResetting(false);
@@ -257,10 +291,7 @@ export function InstagramConfig() {
   if (loading) {
     return (
       <section className="animate-in fade-in-50 duration-200">
-        <SettingsPanelHead
-          title="Instagram"
-          description="Connect your Instagram page to receive messages"
-        />
+        <SettingsPanelHead title="Instagram" description="Connect your Instagram account to receive messages" />
         <div className="flex items-center justify-center py-12">
           <Loader2 className="size-6 animate-spin text-primary" />
         </div>
@@ -268,265 +299,335 @@ export function InstagramConfig() {
     );
   }
 
-  const showResetBanner = resetReason === 'token_corrupted';
-  const isRegistered = Boolean(config?.connected_at);
-
   return (
     <section className="animate-in fade-in-50 duration-200">
       <SettingsPanelHead
         title="Instagram"
-        description="Connect your Instagram page to receive messages"
+        description="Connect your Instagram account to receive and reply to messages"
       />
-      <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
-      <div className="space-y-6">
-        {showResetBanner && (
-          <Alert className="bg-amber-950/40 border-amber-600/40">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="size-5 text-amber-400 mt-0.5 shrink-0" />
-              <div className="flex-1">
-                <AlertTitle className="text-amber-200 mb-1">
-                  Stored token can&apos;t be decrypted
-                </AlertTitle>
-                <AlertDescription className="text-amber-100/80 text-sm">
-                  {statusMessage}
-                </AlertDescription>
+
+      <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
+        <div className="space-y-5">
+
+          {/* Connection status banner */}
+          {needsReset ? (
+            <Alert className="bg-amber-950/40 border-amber-600/40">
+              <AlertTriangle className="size-4 text-amber-400" />
+              <AlertTitle className="text-amber-200">Credentials cannot be decrypted</AlertTitle>
+              <AlertDescription className="text-amber-100/80 text-sm">
+                The stored credentials are corrupted. Reset the configuration and re-enter your credentials.
                 <Button
                   onClick={handleReset}
                   disabled={resetting}
                   size="sm"
-                  className="mt-3 bg-amber-600 hover:bg-amber-700 text-white"
+                  className="mt-3 bg-amber-600 hover:bg-amber-700 text-white flex gap-2"
                 >
-                  {resetting ? (
-                    <>
-                      <Loader2 className="size-4 animate-spin mr-2" />
-                      Resetting
-                    </>
-                  ) : (
-                    <>
-                      <RotateCcw className="size-4 mr-2" />
-                      Reset Config
-                    </>
+                  {resetting ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                  Reset Configuration
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : connectionStatus === 'connected' && accountInfo ? (
+            <Alert className="bg-emerald-950/30 border-emerald-700/50">
+              <CheckCircle2 className="size-4 text-emerald-400" />
+              <AlertTitle className="text-emerald-200">Connected</AlertTitle>
+              <AlertDescription>
+                <div className="flex items-center gap-3 mt-2">
+                  {accountInfo.profile_picture_url && (
+                    <img
+                      src={accountInfo.profile_picture_url}
+                      alt={accountInfo.name}
+                      className="size-10 rounded-full object-cover"
+                    />
                   )}
-                </Button>
-              </div>
-            </div>
-          </Alert>
-        )}
-
-        <Alert className="bg-card border-border">
-          <div className="flex items-center gap-2">
-            {connectionStatus === 'connected' ? (
-              <CheckCircle2 className="size-4 text-primary" />
-            ) : (
+                  <div>
+                    <p className="text-sm font-medium text-foreground">{accountInfo.name}</p>
+                    {accountInfo.username && (
+                      <p className="text-xs text-muted-foreground">@{accountInfo.username}</p>
+                    )}
+                    {accountInfo.followers_count !== undefined && (
+                      <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                        <Users className="size-3" />
+                        {accountInfo.followers_count.toLocaleString()} followers
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </AlertDescription>
+            </Alert>
+          ) : connectionStatus === 'disconnected' && statusMessage ? (
+            <Alert className="bg-card border-border">
               <XCircle className="size-4 text-red-500" />
-            )}
-            <AlertTitle className="text-foreground mb-0">
-              {connectionStatus === 'connected' ? 'Credentials Valid' : 'Not Connected'}
-            </AlertTitle>
-          </div>
-          <AlertDescription className="text-muted-foreground">
-            {connectionStatus === 'connected'
-              ? 'Your Instagram API credentials are valid and working.'
-              : statusMessage || 'You have not connected an Instagram page yet.'}
-          </AlertDescription>
-        </Alert>
+              <AlertTitle className="text-foreground">Not Connected</AlertTitle>
+              <AlertDescription className="text-muted-foreground text-sm">{statusMessage}</AlertDescription>
+            </Alert>
+          ) : null}
 
-        {config && (
-          <Alert
-            className={
-              isRegistered
-                ? 'bg-emerald-950/30 border-emerald-700/50'
-                : 'bg-amber-950/30 border-amber-700/50'
-            }
-          >
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2">
-                {isRegistered ? (
-                  <CheckCircle2 className="size-4 text-emerald-400" />
-                ) : (
-                  <AlertTriangle className="size-4 text-amber-400" />
+          {/* Section 1: App credentials */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-foreground text-base">1. App Credentials</CardTitle>
+              <CardDescription className="text-muted-foreground text-sm">
+                From{' '}
+                <a
+                  href="https://developers.facebook.com/apps"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline inline-flex items-center gap-0.5"
+                >
+                  Meta App Dashboard <ExternalLink className="size-3" />
+                </a>
+                {' '}&#8594; Instagram &#8594; API settings
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-sm">
+                  Instagram App ID <span className="text-red-400">*</span>
+                </Label>
+                <Input
+                  placeholder="e.g. 1796683971259474"
+                  value={appId}
+                  onChange={(e) => setAppId(e.target.value)}
+                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground font-mono"
+                />
+                {savedAppId && (
+                  <p className="text-xs text-muted-foreground">Current App ID: {savedAppId}</p>
                 )}
-                <AlertTitle
-                  className={
-                    'mb-0 ' + (isRegistered ? 'text-emerald-200' : 'text-amber-200')
-                  }
-                >
-                  {isRegistered ? 'Registered' : 'Not Registered'}
-                </AlertTitle>
               </div>
-            </div>
-            <AlertDescription className="text-muted-foreground mt-2 text-xs leading-relaxed">
-              {isRegistered ? 'Your app is subscribed to Instagram messages.' : 'Your app is not subscribed yet.'}
-            </AlertDescription>
-          </Alert>
-        )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-foreground">API Credentials</CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Configure your Instagram API credentials from Meta App Dashboard
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">Facebook Page ID</Label>
-              <Input
-                placeholder="e.g. 100234567890123"
-                value={pageId}
-                onChange={(e) => setPageId(e.target.value)}
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">Access Token</Label>
-              <div className="relative">
-                <Input
-                  type={showToken ? 'text' : 'password'}
-                  placeholder="EAA..."
-                  value={accessToken}
-                  onChange={(e) => {
-                    setAccessToken(e.target.value);
-                    setTokenEdited(true);
-                  }}
-                  onFocus={() => {
-                    if (accessToken === MASKED_TOKEN) {
-                      setAccessToken('');
-                      setTokenEdited(true);
-                    }
-                  }}
-                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground pr-10"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowToken(!showToken)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {showToken ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                </button>
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-sm">
+                  App Secret <span className="text-red-400">*</span>
+                </Label>
+                <div className="relative">
+                  <Input
+                    type={showAppSecret ? 'text' : 'password'}
+                    placeholder="b42c4a622a4e1055f46e..."
+                    value={appSecret}
+                    onChange={(e) => { setAppSecret(e.target.value); setAppSecretEdited(true); }}
+                    onFocus={() => { if (appSecret === MASKED) { setAppSecret(''); setAppSecretEdited(true); } }}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground pr-10 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAppSecret(!showAppSecret)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showAppSecret ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </button>
+                </div>
+                {config && !appSecretEdited && (
+                  <p className="text-xs text-muted-foreground">Saved securely &#8212; click to re-enter</p>
+                )}
               </div>
-              {config && !tokenEdited && (
+            </CardContent>
+          </Card>
+
+          {/* Section 2: Access Token */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-foreground text-base">2. Instagram Account Token</CardTitle>
+              <CardDescription className="text-muted-foreground text-sm">
+                Generate a token for your Instagram account in the Meta dashboard under{' '}
+                <strong className="text-foreground">Generate access tokens</strong>
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-sm">
+                  Access Token <span className="text-red-400">*</span>
+                </Label>
+                <div className="relative">
+                  <Input
+                    type={showAccessToken ? 'text' : 'password'}
+                    placeholder="EAABsbCS..."
+                    value={accessToken}
+                    onChange={(e) => { setAccessToken(e.target.value); setAccessTokenEdited(true); }}
+                    onFocus={() => { if (accessToken === MASKED) { setAccessToken(''); setAccessTokenEdited(true); } }}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground pr-10 font-mono text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAccessToken(!showAccessToken)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showAccessToken ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </button>
+                </div>
+                {config && !accessTokenEdited && (
+                  <p className="text-xs text-muted-foreground">Saved securely &#8212; click to re-enter</p>
+                )}
                 <p className="text-xs text-muted-foreground">
-                  Hidden for security
+                  Use a <strong>long-lived token</strong> (valid 60 days) to avoid frequent re-authentication.
                 </p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">Webhook Verify Token</Label>
-              <Input
-                placeholder="Optional"
-                value={verifyToken}
-                onChange={(e) => setVerifyToken(e.target.value)}
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-foreground">Webhook URL</CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Provide this webhook URL to Meta App Dashboard
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">Webhook URL</Label>
-              <div className="flex gap-2">
-                <Input
-                  readOnly
-                  value={webhookUrl}
-                  className="bg-muted border-border text-muted-foreground font-mono text-sm"
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={handleCopyWebhookUrl}
-                  className="shrink-0 border-border text-muted-foreground hover:text-foreground hover:bg-muted"
-                >
-                  <Copy className="size-4" />
-                </Button>
               </div>
-            </div>
-          </CardContent>
-        </Card>
 
-        <div className="flex flex-wrap gap-3">
-          <Button
-            onClick={handleSave}
-            disabled={saving}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground"
-          >
-            {saving ? (
-              <>
-                <Loader2 className="size-4 animate-spin mr-2" />
-                Saving...
-              </>
-            ) : (
-              'Save Configuration'
-            )}
-          </Button>
-          <Button
-            variant="outline"
-            onClick={handleTestConnection}
-            disabled={testing || !config}
-            className="border-border text-muted-foreground hover:text-foreground hover:bg-muted"
-          >
-            {testing ? (
-              <>
-                <Loader2 className="size-4 animate-spin mr-2" />
-                Testing...
-              </>
-            ) : (
-              <>
-                <Zap className="size-4 mr-2" />
-                Test Connection
-              </>
-            )}
-          </Button>
-          {config && (
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-sm">
+                  Facebook Page ID <span className="text-muted-foreground/60 font-normal">(optional &#8212; needed for webhook subscription)</span>
+                </Label>
+                <Input
+                  placeholder="e.g. 17841403988098752"
+                  value={pageId}
+                  onChange={(e) => setPageId(e.target.value)}
+                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground font-mono"
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Section 3: Webhook URL */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-foreground text-base">3. Webhook Configuration</CardTitle>
+              <CardDescription className="text-muted-foreground text-sm">
+                Add this URL in Meta App Dashboard &#8594; Webhooks &#8594; Configure
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-sm">Callback URL</Label>
+                <div className="flex gap-2">
+                  <Input
+                    readOnly
+                    value={webhookUrl}
+                    className="bg-muted border-border text-muted-foreground font-mono text-xs"
+                  />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={handleCopyWebhookUrl}
+                    className="shrink-0 border-border text-muted-foreground hover:text-foreground hover:bg-muted"
+                  >
+                    <Copy className="size-4" />
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Subscribe to: <code className="bg-muted px-1 rounded text-[10px]">messages</code>{' '}
+                  <code className="bg-muted px-1 rounded text-[10px]">messaging_postbacks</code>
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Actions */}
+          <div className="flex flex-wrap gap-3">
             <Button
-              variant="outline"
-              onClick={handleReset}
-              disabled={resetting}
-              className="border-red-900 text-red-400 hover:text-red-300 hover:bg-red-950/40"
+              onClick={handleSave}
+              disabled={saving}
+              className="bg-primary hover:bg-primary/90 text-primary-foreground"
             >
-              {resetting ? (
-                <>
-                  <Loader2 className="size-4 animate-spin mr-2" />
-                  Resetting...
-                </>
+              {saving ? (
+                <><Loader2 className="size-4 animate-spin mr-2" />Saving...</>
               ) : (
-                <>
-                  <RotateCcw className="size-4 mr-2" />
-                  Reset Config
-                </>
+                'Save Configuration'
               )}
             </Button>
+
+            <Button
+              variant="outline"
+              onClick={handleTestConnection}
+              disabled={testing || !config}
+              className="border-border text-muted-foreground hover:text-foreground hover:bg-muted"
+            >
+              {testing ? (
+                <><Loader2 className="size-4 animate-spin mr-2" />Testing...</>
+              ) : (
+                <><Zap className="size-4 mr-2" />Test Connection</>
+              )}
+            </Button>
+
+            {config && (
+              <Button
+                variant="outline"
+                onClick={handleReset}
+                disabled={resetting}
+                className="border-red-900 text-red-400 hover:text-red-300 hover:bg-red-950/40"
+              >
+                {resetting ? (
+                  <><Loader2 className="size-4 animate-spin mr-2" />Resetting...</>
+                ) : (
+                  <><RotateCcw className="size-4 mr-2" />Reset Config</>
+                )}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Right column: Instructions */}
+        <div className="space-y-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-foreground text-base">Setup Guide</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              <div className="space-y-1">
+                <p className="font-medium text-foreground">Step 1 &#8212; Create a Meta App</p>
+                <p className="text-muted-foreground text-xs">
+                  Go to{' '}
+                  <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer"
+                    className="text-primary hover:underline">developers.facebook.com/apps
+                  </a>{' '}
+                  and create a Business app. Add the <strong>Instagram</strong> product.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <p className="font-medium text-foreground">Step 2 &#8212; Copy App credentials</p>
+                <p className="text-muted-foreground text-xs">
+                  Copy the <strong>App ID</strong> and <strong>App Secret</strong> from the Basic Settings page.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <p className="font-medium text-foreground">Step 3 &#8212; Generate a Token</p>
+                <p className="text-muted-foreground text-xs">
+                  Under <strong>Instagram &#8594; API setup</strong>, add your Instagram Business/Creator account and click <strong>Generate token</strong>.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <p className="font-medium text-foreground">Step 4 &#8212; Configure Webhooks</p>
+                <p className="text-muted-foreground text-xs">
+                  In <strong>Webhooks</strong>, add the Callback URL shown above. Subscribe to <code className="bg-muted px-1 rounded">messages</code> and <code className="bg-muted px-1 rounded">messaging_postbacks</code>.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <p className="font-medium text-foreground">Step 5 &#8212; Set app to Live mode</p>
+                <p className="text-muted-foreground text-xs">
+                  Switch your app from <strong>Development</strong> to <strong>Live</strong> mode. In Development, only testers can send messages.
+                </p>
+              </div>
+
+              <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+                <p className="font-medium text-foreground mb-1">Token types</p>
+                <p><strong>Short-lived</strong>: expires in 1 hour &#8212; only for testing</p>
+                <p><strong>Long-lived</strong>: valid for 60 days &#8212; recommended for production</p>
+              </div>
+            </CardContent>
+          </Card>
+
+          {connectionStatus === 'connected' && accountInfo && (
+            <Card className="border-emerald-700/30 bg-emerald-950/20">
+              <CardContent className="pt-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <User className="size-4 text-emerald-400" />
+                  <span className="text-sm font-medium text-emerald-200">Active Account</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Account ID: <code className="bg-muted px-1 rounded">{accountInfo.id}</code>
+                </p>
+                {accountInfo.username && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Username: <strong>@{accountInfo.username}</strong>
+                  </p>
+                )}
+              </CardContent>
+            </Card>
           )}
         </div>
-      </div>
-      
-      <div>
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-foreground text-base">Setup Instructions</CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Follow these steps to connect Instagram
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4 text-sm text-muted-foreground">
-            <p>1. Go to your Meta App Dashboard and add Instagram to your app.</p>
-            <p>2. Connect a Facebook Page linked to an Instagram Professional account.</p>
-            <p>3. Copy the Page ID and generate an Access Token.</p>
-            <p>4. Configure the Webhook URL above with your custom verify token.</p>
-            <p>5. Subscribe to `messages` and `messaging_postbacks`.</p>
-          </CardContent>
-        </Card>
-      </div>
       </div>
     </section>
   );
