@@ -192,6 +192,7 @@ export function InstagramConfig() {
       return;
     }
 
+    // Build payload
     const payload: Record<string, unknown> = {
       app_id: appId.trim(),
       page_id: pageId.trim() || null,
@@ -201,6 +202,8 @@ export function InstagramConfig() {
     if (accessTokenValue) payload.access_token = accessTokenValue;
     if (verifyTokenValue) payload.verify_token = verifyTokenValue;
 
+    // For new config, both are mandatory (checked above)
+    // For update, if neither secret is being changed, we need to prevent saving with no secret
     if (!isNewConfig && !appSecretValue && !accessTokenValue && !verifyTokenValue && config.page_id === pageId) {
       toast.error('To update, please re-enter at least one of: App Secret, Access Token');
       return;
@@ -373,10 +376,10 @@ export function InstagramConfig() {
             </Alert>
           ) : null}
 
-          {/* Section 1: App credentials */}
+          {/* ── Section 1: App credentials ── */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-foreground text-base">1. App Credentials</CardTitle>
+              <CardTitle className="text-foreground text-base">1. Meta App Credentials</CardTitle>
               <CardDescription className="text-muted-foreground text-sm">
                 From{' '}
                 <a
@@ -387,13 +390,13 @@ export function InstagramConfig() {
                 >
                   Meta App Dashboard <ExternalLink className="size-3" />
                 </a>
-                {' '}&#8594; Instagram &#8594; API settings
+                {' '}→ Configuración de la app → Básica
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label className="text-muted-foreground text-sm">
-                  Instagram App ID <span className="text-red-400">*</span>
+                  Meta App ID (Identificador de la aplicación) <span className="text-red-400">*</span>
                 </Label>
                 <Input
                   placeholder="e.g. 1796683971259474"
@@ -408,7 +411,7 @@ export function InstagramConfig() {
 
               <div className="space-y-2">
                 <Label className="text-muted-foreground text-sm">
-                  App Secret <span className="text-red-400">*</span>
+                  Meta App Secret (Clave secreta de la aplicación) <span className="text-red-400">*</span>
                 </Label>
                 <div className="relative">
                   <Input
@@ -428,25 +431,25 @@ export function InstagramConfig() {
                   </button>
                 </div>
                 {config && !appSecretEdited && (
-                  <p className="text-xs text-muted-foreground">Saved securely &#8212; click to re-enter</p>
+                  <p className="text-xs text-muted-foreground">Saved securely — click to re-enter</p>
                 )}
               </div>
             </CardContent>
           </Card>
 
-          {/* Section 2: Access Token */}
+          {/* ── Section 2: Access Token ── */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-foreground text-base">2. Instagram Account Token</CardTitle>
+              <CardTitle className="text-foreground text-base">2. Instagram API Token</CardTitle>
               <CardDescription className="text-muted-foreground text-sm">
-                Generate a token for your Instagram account in the Meta dashboard under{' '}
-                <strong className="text-foreground">Generate access tokens</strong>
+                Generated in Meta dashboard under{' '}
+                <strong className="text-foreground">Instagram → API setup → Generate token</strong>
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label className="text-muted-foreground text-sm">
-                  Access Token <span className="text-red-400">*</span>
+                  Access Token (Token de acceso) <span className="text-red-400">*</span>
                 </Label>
                 <div className="relative">
                   <Input
@@ -466,7 +469,7 @@ export function InstagramConfig() {
                   </button>
                 </div>
                 {config && !accessTokenEdited && (
-                  <p className="text-xs text-muted-foreground">Saved securely &#8212; click to re-enter</p>
+                  <p className="text-xs text-muted-foreground">Saved securely — click to re-enter</p>
                 )}
                 <p className="text-xs text-muted-foreground">
                   Use a <strong>long-lived token</strong> (valid 60 days) to avoid frequent re-authentication.
@@ -475,7 +478,7 @@ export function InstagramConfig() {
 
               <div className="space-y-2">
                 <Label className="text-muted-foreground text-sm">
-                  Facebook Page ID <span className="text-muted-foreground/60 font-normal">(optional &#8212; needed for webhook subscription)</span>
+                  Facebook Page ID <span className="text-muted-foreground/60 font-normal">(optional — needed for webhook subscription)</span>
                 </Label>
                 <Input
                   placeholder="e.g. 17841403988098752"
@@ -492,7 +495,7 @@ export function InstagramConfig() {
             <CardHeader className="pb-3">
               <CardTitle className="text-foreground text-base">3. Webhook Configuration</CardTitle>
               <CardDescription className="text-muted-foreground text-sm">
-                Add this URL in Meta App Dashboard &#8594; Webhooks &#8594; Configure
+                Add this URL in Meta App Dashboard → Webhooks → Configure
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -532,7 +535,7 @@ export function InstagramConfig() {
                     className="bg-muted border-border text-foreground placeholder:text-muted-foreground font-mono"
                   />
                   {savedVerifyToken && verifyToken === MASKED && (
-                    <p className="text-xs text-muted-foreground">Saved securely &#8212; click to edit</p>
+                    <p className="text-xs text-muted-foreground">Saved securely — click to edit</p>
                   )}
                 </div>
               </div>
@@ -591,7 +594,7 @@ export function InstagramConfig() {
             </CardHeader>
             <CardContent className="space-y-4 text-sm">
               <div className="space-y-1">
-                <p className="font-medium text-foreground">Step 1 &#8212; Create a Meta App</p>
+                <p className="font-medium text-foreground">Step 1 — Create a Meta App</p>
                 <p className="text-muted-foreground text-xs">
                   Go to{' '}
                   <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer"
@@ -602,28 +605,28 @@ export function InstagramConfig() {
               </div>
 
               <div className="space-y-1">
-                <p className="font-medium text-foreground">Step 2 &#8212; Copy App credentials</p>
+                <p className="font-medium text-foreground">Step 2 — Copy App credentials</p>
                 <p className="text-muted-foreground text-xs">
                   Copy the <strong>App ID</strong> and <strong>App Secret</strong> from the Basic Settings page.
                 </p>
               </div>
 
               <div className="space-y-1">
-                <p className="font-medium text-foreground">Step 3 &#8212; Generate a Token</p>
+                <p className="font-medium text-foreground">Step 3 — Generate a Token</p>
                 <p className="text-muted-foreground text-xs">
-                  Under <strong>Instagram &#8594; API setup</strong>, add your Instagram Business/Creator account and click <strong>Generate token</strong>.
+                  Under <strong>Instagram → API setup</strong>, add your Instagram Business/Creator account and click <strong>Generate token</strong>.
                 </p>
               </div>
 
               <div className="space-y-1">
-                <p className="font-medium text-foreground">Step 4 &#8212; Configure Webhooks</p>
+                <p className="font-medium text-foreground">Step 4 — Configure Webhooks</p>
                 <p className="text-muted-foreground text-xs">
                   In <strong>Webhooks</strong>, add the Callback URL shown above. Subscribe to <code className="bg-muted px-1 rounded">messages</code> and <code className="bg-muted px-1 rounded">messaging_postbacks</code>.
                 </p>
               </div>
 
               <div className="space-y-1">
-                <p className="font-medium text-foreground">Step 5 &#8212; Set app to Live mode</p>
+                <p className="font-medium text-foreground">Step 5 — Set app to Live mode</p>
                 <p className="text-muted-foreground text-xs">
                   Switch your app from <strong>Development</strong> to <strong>Live</strong> mode. In Development, only testers can send messages.
                 </p>
@@ -631,8 +634,8 @@ export function InstagramConfig() {
 
               <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
                 <p className="font-medium text-foreground mb-1">Token types</p>
-                <p><strong>Short-lived</strong>: expires in 1 hour &#8212; only for testing</p>
-                <p><strong>Long-lived</strong>: valid for 60 days &#8212; recommended for production</p>
+                <p><strong>Short-lived</strong>: expires in 1 hour — only for testing</p>
+                <p><strong>Long-lived</strong>: valid for 60 days — recommended for production</p>
               </div>
             </CardContent>
           </Card>
