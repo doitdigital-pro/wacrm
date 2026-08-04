@@ -124,7 +124,6 @@ export async function sendInstagramMessageToConversation(
       content_type: messageType,
       content_text: contentText || null,
       media_url: mediaUrl || null,
-      filename: filename || null,
       message_id: igMessageId,
       status: 'sent',
       reply_to_message_id: replyToMessageId || null,
