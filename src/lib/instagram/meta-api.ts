@@ -145,7 +145,23 @@ export async function sendMediaMessage(
   });
 
   if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`);
+    let errorMessage = `Meta API error: ${response.status}`;
+    try {
+      const errorData = await response.json();
+      if (errorData.error?.message) {
+        errorMessage = errorData.error.message;
+      }
+    } catch {}
+
+    // If Instagram rejects the attachment format (e.g. .ogg, .webm, non-pdf docs),
+    // fallback to sending it as a text message containing the URL.
+    if (errorMessage.toLowerCase().includes('attachment format is not supported') || errorMessage.toLowerCase().includes('file size')) {
+      console.warn(`[IG Meta API] Media send failed (${errorMessage}). Falling back to text URL.`);
+      const textFallback = caption ? `${caption}\n\nArchivo adjunto: ${link}` : `Archivo adjunto: ${link}`;
+      return sendTextMessage({ pageId, accessToken, to, text: textFallback });
+    }
+
+    throw new Error(errorMessage);
   }
 
   const data = await response.json();
