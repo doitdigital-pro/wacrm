@@ -77,15 +77,18 @@ export async function GET() {
       )
     }
 
+    // Return safe metadata (no secrets)
     const hasAppId = Boolean(config.app_id)
     const hasAppSecret = Boolean(config.app_secret)
     const hasAccessToken = Boolean(config.access_token)
     const hasPageId = Boolean(config.page_id)
 
+    // If we have all credentials, verify them
     if (hasAppId && hasAppSecret && hasAccessToken) {
+      let appSecret: string
       let accessToken: string
       try {
-        decrypt(config.app_secret) // verify app_secret is decryptable
+        appSecret = decrypt(config.app_secret)
         accessToken = decrypt(config.access_token)
       } catch (err) {
         console.error('[instagram/config GET] Token decryption failed:', err)
@@ -103,6 +106,7 @@ export async function GET() {
       }
 
       try {
+        // Verify the access token is still valid
         const accountInfo = await getInstagramAccountInfo({ accessToken })
         return NextResponse.json({
           connected: true,
@@ -176,11 +180,43 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { app_id, app_secret, access_token, page_id, verify_token } = body
+    const { app_id, page_id, verify_token } = body
+    let { app_secret, access_token } = body
 
-    if (!app_id || !app_secret) {
+    if (!app_id) {
       return NextResponse.json(
-        { error: 'App ID and App Secret are required' },
+        { error: 'App ID is required' },
+        { status: 400 }
+      )
+    }
+
+    // Check existing config to fill in missing secrets
+    const { data: existing } = await supabase
+      .from('instagram_configs')
+      .select('*')
+      .eq('account_id', accountId)
+      .maybeSingle()
+
+    if (existing) {
+      if (!app_secret && existing.app_secret) {
+        try {
+          app_secret = decrypt(existing.app_secret)
+        } catch (err) {
+          return NextResponse.json({ error: 'Stored App Secret is corrupted. Please re-enter it.' }, { status: 400 })
+        }
+      }
+      if (!access_token && existing.access_token) {
+        try {
+          access_token = decrypt(existing.access_token)
+        } catch (err) {
+          return NextResponse.json({ error: 'Stored Access Token is corrupted. Please re-enter it.' }, { status: 400 })
+        }
+      }
+    }
+
+    if (!app_secret) {
+      return NextResponse.json(
+        { error: 'App Secret is required' },
         { status: 400 }
       )
     }
@@ -248,7 +284,11 @@ export async function POST(request: Request) {
     try {
       encryptedAppSecret = encrypt(app_secret)
       encryptedAccessToken = encrypt(access_token)
-      encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
+      if (verify_token !== undefined) {
+        encryptedVerifyToken = verify_token ? encrypt(verify_token) : null;
+      } else {
+        encryptedVerifyToken = existing ? existing.verify_token : null;
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown encryption error'
       console.error('Encryption failed:', message)
@@ -258,7 +298,7 @@ export async function POST(request: Request) {
       )
     }
 
-    // 5. Try to subscribe page to webhook events (optional)
+    // 5. Try to subscribe page to webhook events (optional - page_id may be provided)
     let subscribedAt: string | null = null
     let subscriptionError: string | null = null
 
@@ -284,13 +324,14 @@ export async function POST(request: Request) {
       updated_at: new Date().toISOString(),
     }
 
-    const { data: existing } = await supabase
+    // Upsert config
+    const { data: existingRecord } = await supabase
       .from('instagram_configs')
       .select('id')
       .eq('account_id', accountId)
       .maybeSingle()
 
-    if (existing) {
+    if (existingRecord) {
       const { error: updateError } = await supabase
         .from('instagram_configs')
         .update(baseRow)
