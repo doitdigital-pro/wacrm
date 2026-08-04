@@ -231,33 +231,52 @@ export async function subscribePageToApp(args: {
 
 /**
  * Fetch the Instagram user's profile information using their IGSID.
+ * 
+ * According to Meta docs, the correct fields for messaging participants are:
+ *   name, username, profile_pic, follower_count, is_user_follow_business
+ * 
+ * Requires the `instagram_business_manage_messages` permission.
+ * The user must have initiated a conversation first.
  */
 export async function getInstagramUserProfile(args: {
   igScopedId: string;
   accessToken: string;
-}): Promise<{ name: string; username: string; profile_picture_url?: string }> {
+}): Promise<{ name: string; username: string; profile_pic?: string }> {
   const { igScopedId, accessToken } = args;
   
-  const isIgToken = accessToken.startsWith('IG');
-  const baseUrl = isIgToken ? `https://graph.instagram.com/${META_API_VERSION}` : META_API_BASE;
+  // Try Instagram Graph API (for IGAA tokens), then Facebook Graph API as fallback
+  const urls = [
+    `https://graph.instagram.com/${META_API_VERSION}/${igScopedId}?fields=name,username,profile_pic&access_token=${accessToken}`,
+    `https://graph.facebook.com/${META_API_VERSION}/${igScopedId}?fields=name,username,profile_pic&access_token=${accessToken}`,
+  ];
   
-  const url = `${baseUrl}/${igScopedId}?access_token=${accessToken}&fields=name,username,profile_picture_url`;
-  
-  try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.error(`[Meta API] Failed to fetch profile for ${igScopedId}:`, await response.text());
-      return { name: `IG_${igScopedId}`, username: '' };
+  for (const url of urls) {
+    try {
+      console.log(`[Meta API] Fetching profile for IGSID ${igScopedId} from: ${url.split('?')[0]}`);
+      const response = await fetch(url);
+      
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error(`[Meta API] Profile fetch failed (${response.status}):`, errBody);
+        continue; // try next URL
+      }
+      
+      const data = await response.json();
+      console.log(`[Meta API] Profile data for ${igScopedId}:`, JSON.stringify(data));
+      
+      const name = data.name || data.username;
+      if (name) {
+        return {
+          name,
+          username: data.username || '',
+          profile_pic: data.profile_pic,
+        };
+      }
+    } catch (err) {
+      console.error(`[Meta API] Error fetching profile for ${igScopedId}:`, err);
     }
-    
-    const data = await response.json();
-    return {
-      name: data.name || data.username || `IG_${igScopedId}`,
-      username: data.username || '',
-      profile_picture_url: data.profile_picture_url,
-    };
-  } catch (err) {
-    console.error(`[Meta API] Error fetching profile for ${igScopedId}:`, err);
-    return { name: `IG_${igScopedId}`, username: '' };
   }
+  
+  console.warn(`[Meta API] Could not fetch profile for ${igScopedId}, using fallback name`);
+  return { name: `IG_${igScopedId}`, username: '' };
 }

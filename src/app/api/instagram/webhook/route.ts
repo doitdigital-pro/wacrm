@@ -120,41 +120,35 @@ async function processWebhook(body: WebhookBody) {
         .or(`instagram_account_id.eq.${pageId},page_id.eq.${pageId}`);
 
       if (configError || !configRowsData || configRowsData.length === 0) {
-        console.error('No IG config found for recipient ID:', pageId);
-        
-        // DEBUG: If no config matches, let's insert a debug message into the FIRST available IG config 
-        // so the user can see what recipient.id Meta actually sent!
-        const { data } = await supabaseAdmin().from('instagram_configs').select('*').limit(1).maybeSingle();
-        const anyConfig = data as { account_id: string } | null;
-        if (anyConfig) {
-          const { conversationId } = await resolveConversationByInstagram(supabaseAdmin(), anyConfig.account_id, senderId, `DEBUG_${senderId}`);
-          await (supabaseAdmin() as any).from('messages').insert({
-            conversation_id: conversationId,
-            sender_type: 'customer',
-            content_type: 'text',
-            content_text: `DEBUG: Config not found for recipient ${pageId}. Payload object: ${body.object}`,
-            message_id: message.mid || `debug_${Date.now()}`,
-            status: 'delivered',
-            created_at: new Date().toISOString(),
-          });
-          await (supabaseAdmin() as any).from('conversations').update({ last_message_text: `DEBUG: ${pageId}`, last_message_at: new Date().toISOString() }).eq('id', conversationId);
-        }
+        console.error(`[IG Webhook] No config found for recipient ID: ${pageId}. Make sure this ID is saved as the "Cuenta de Instagram (ID numérico)" in your settings.`);
         continue;
       }
 
       const configRows = configRowsData as { account_id: string; access_token: string }[];
       const config = configRows[0];
 
+      // Fetch the sender's real Instagram profile name
       let senderName = `IG_${senderId}`;
       try {
+        const decryptedToken = decrypt(config.access_token);
+        console.log(`[IG Webhook] Fetching profile for sender ${senderId} (token prefix: ${decryptedToken.substring(0, 4)}...)`);
+        
         const { getInstagramUserProfile } = await import('@/lib/instagram/meta-api');
         const profile = await getInstagramUserProfile({
           igScopedId: senderId,
-          accessToken: decrypt(config.access_token)
+          accessToken: decryptedToken,
         });
-        senderName = profile.name;
+        
+        console.log(`[IG Webhook] Profile result for ${senderId}: name="${profile.name}", username="${profile.username}"`);
+        
+        // Prefer username for display, fall back to name
+        if (profile.username) {
+          senderName = profile.username;
+        } else if (profile.name && !profile.name.startsWith('IG_')) {
+          senderName = profile.name;
+        }
       } catch (err) {
-        console.error('Failed to fetch sender profile:', err);
+        console.error(`[IG Webhook] Failed to fetch sender profile for ${senderId}:`, err);
       }
 
       // Resolve contact and conversation
