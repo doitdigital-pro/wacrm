@@ -47,15 +47,15 @@ export interface SendTextMessageArgs {
   text: string;
 }
 
-/**
- * Send a free-form Instagram text message via the Send API.
- * Only works inside the 24-hour customer service window.
- */
 export async function sendTextMessage(
   args: SendTextMessageArgs
 ): Promise<MetaSendResult> {
   const { pageId, accessToken, to, text } = args;
-  const url = `${META_API_BASE}/${pageId}/messages`;
+  
+  const isIgToken = accessToken.startsWith('IG');
+  const baseUrl = isIgToken ? `https://graph.instagram.com/${META_API_VERSION}` : META_API_BASE;
+  const endpoint = isIgToken ? 'me' : pageId;
+  const url = `${baseUrl}/${endpoint}/messages`;
   
   const body = {
     recipient: { id: to },
@@ -93,7 +93,11 @@ export async function sendAction(
   args: SendActionArgs
 ): Promise<void> {
   const { pageId, accessToken, to, action } = args;
-  const url = `${META_API_BASE}/${pageId}/messages`;
+  
+  const isIgToken = accessToken.startsWith('IG');
+  const baseUrl = isIgToken ? `https://graph.instagram.com/${META_API_VERSION}` : META_API_BASE;
+  const endpoint = isIgToken ? 'me' : pageId;
+  const url = `${baseUrl}/${endpoint}/messages`;
   
   const body = {
     recipient: { id: to },
@@ -137,15 +141,17 @@ export async function verifyAppCredentials(args: {
   return { id: data.id, name: data.name || 'Unknown App' };
 }
 
-/**
- * Get Instagram account info using an access token.
- * Returns the Instagram account ID, name, and username.
- */
 export async function getInstagramAccountInfo(args: {
   accessToken: string;
 }): Promise<InstagramAccountInfo> {
   const { accessToken } = args;
-  const url = `${META_API_BASE}/me?access_token=${accessToken}&fields=id,name,username,profile_picture_url,followers_count`;
+  
+  // If the token starts with IG, it's an Instagram Graph API token
+  // Otherwise, it's a Facebook Graph API token
+  const isIgToken = accessToken.startsWith('IG');
+  const baseUrl = isIgToken ? `https://graph.instagram.com/${META_API_VERSION}` : META_API_BASE;
+  
+  const url = `${baseUrl}/me?access_token=${accessToken}&fields=id,name,username,profile_picture_url,followers_count`;
   const response = await fetch(url);
 
   if (!response.ok) {
@@ -208,6 +214,7 @@ export async function subscribePageToApp(args: {
   const { pageId, accessToken } = args;
   const url = `${META_API_BASE}/${pageId}/subscribed_apps`;
   
+  // Need to subscribe to 'messages' and 'messaging_postbacks'
   const response = await fetch(url, {
     method: 'POST',
     headers: {
