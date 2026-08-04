@@ -331,13 +331,13 @@ export async function POST(request: Request) {
     }
 
     // Upsert config
-    const { data: existing } = await supabase
+    const { data: existingRow } = await supabase
       .from('instagram_configs')
       .select('id')
       .eq('account_id', accountId)
       .maybeSingle()
 
-    if (existing) {
+    if (existingRow) {
       const { error: updateError } = await supabase
         .from('instagram_configs')
         .update(baseRow)
